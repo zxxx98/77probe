@@ -80,12 +80,7 @@ func (h *Handler) RotateToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	token, err := h.service.RotateToken(r.Context(), id)
-	if err != nil {
-		handleServiceError(w, err)
-		return
-	}
-	server, err := h.service.Get(r.Context(), id)
+	server, token, err := h.service.RotateTokenWithServer(r.Context(), id)
 	if err != nil {
 		handleServiceError(w, err)
 		return

@@ -111,23 +111,21 @@ func (s *Service) Update(ctx context.Context, id int64, name *string, enabled *b
 		}
 		name = &trimmed
 	}
-	current, err := s.Get(ctx, id)
-	if err != nil {
-		return Server{}, err
-	}
-	if name != nil {
-		current.Name = *name
-	}
-	if enabled != nil {
-		current.Enabled = *enabled
-	}
 	now := s.now().UTC()
-	_, err = s.db.ExecContext(ctx, `UPDATE servers SET name=?, enabled=?, updated_at=? WHERE id=?`, current.Name, current.Enabled, now.Format(time.RFC3339Nano), id)
-	if err != nil {
-		return Server{}, err
+	var row scanner
+	switch {
+	case name != nil && enabled != nil:
+		row = s.db.QueryRowContext(ctx, `UPDATE servers SET name=?, enabled=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *name, *enabled, now.Format(time.RFC3339Nano), id)
+	case name != nil:
+		row = s.db.QueryRowContext(ctx, `UPDATE servers SET name=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *name, now.Format(time.RFC3339Nano), id)
+	default:
+		row = s.db.QueryRowContext(ctx, `UPDATE servers SET enabled=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *enabled, now.Format(time.RFC3339Nano), id)
 	}
-	current.UpdatedAt = now
-	return current, nil
+	server, err := scanServer(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Server{}, ErrNotFound
+	}
+	return server, err
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) error {
@@ -146,22 +144,31 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 }
 
 func (s *Service) RotateToken(ctx context.Context, id int64) (string, error) {
+	_, token, err := s.RotateTokenWithServer(ctx, id)
+	return token, err
+}
+
+func (s *Service) RotateTokenWithServer(ctx context.Context, id int64) (Server, string, error) {
 	rawToken, digest, err := agentTokenPair()
 	if err != nil {
-		return "", err
+		return Server{}, "", err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE servers SET token_hash=?, updated_at=? WHERE id=?`, digest, s.now().UTC().Format(time.RFC3339Nano), id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", err
+		return Server{}, "", err
 	}
-	count, err := result.RowsAffected()
+	defer tx.Rollback()
+	server, err := scanServer(tx.QueryRowContext(ctx, `UPDATE servers SET token_hash=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, digest, s.now().UTC().Format(time.RFC3339Nano), id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Server{}, "", ErrNotFound
+	}
 	if err != nil {
-		return "", err
+		return Server{}, "", err
 	}
-	if count == 0 {
-		return "", ErrNotFound
+	if err := tx.Commit(); err != nil {
+		return Server{}, "", err
 	}
-	return rawToken, nil
+	return server, rawToken, nil
 }
 
 func (s *Service) AuthenticateToken(ctx context.Context, rawToken string) (Server, error) {
