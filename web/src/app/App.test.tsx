@@ -81,6 +81,21 @@ function deferredResponse() {
   return { promise, resolve };
 }
 
+const managementServer = {
+  id: 7,
+  name: "home-lab",
+  enabled: true,
+  agentVersion: "0.1.0",
+  createdAt: "2026-07-26T04:00:00Z",
+  updatedAt: "2026-07-26T04:00:00Z",
+};
+
+function beforeUnload() {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event;
+}
+
 describe("DashboardRouter", () => {
   beforeEach(() => {
     QuietEventSource.instance = undefined;
@@ -209,5 +224,114 @@ describe("DashboardRouter", () => {
     expect(screen.getByRole("link", { name: "概览" })).not.toHaveAttribute(
       "aria-current",
     );
+  });
+
+  it("publishes a deferred create token after navigation and protects it until acknowledgement", async () => {
+    window.history.replaceState(null, "", "/servers");
+    const createResponse = deferredResponse();
+    let created = false;
+    fetchMock.mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/servers" && init?.method === "POST") {
+        return createResponse.promise;
+      }
+      if (path === "/api/servers") {
+        return Promise.resolve(Response.json(created ? [managementServer] : []));
+      }
+      if (path === "/api/servers/status") {
+        return Promise.resolve(Response.json([]));
+      }
+      return Promise.reject(new Error(`unexpected request: ${path}`));
+    });
+    render(<DashboardRouter />);
+    await screen.findByText("还没有添加服务器");
+
+    fireEvent.click(screen.getByRole("button", { name: "添加服务器" }));
+    fireEvent.change(screen.getByLabelText("服务器名称"), {
+      target: { value: "home-lab" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    fireEvent.click(screen.getByRole("link", { name: "概览" }));
+
+    expect(window.location.pathname).toBe("/");
+    expect(
+      screen.getByText("正在生成一次性 Agent Token；完成后会自动返回安装面板。"),
+    ).toBeInTheDocument();
+    expect(beforeUnload().defaultPrevented).toBe(true);
+
+    fireEvent.click(screen.getByRole("link", { name: "服务器" }));
+    await screen.findByText("还没有添加服务器");
+
+    await act(async () => {
+      created = true;
+      createResponse.resolve(
+        Response.json({ server: managementServer, token: "tp_after_create" }),
+      );
+    });
+
+    expect(window.location.pathname).toBe("/servers");
+    expect(await screen.findByText("tp_after_create")).toBeInTheDocument();
+    expect(await screen.findByTestId("managed-server-7")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "安装 home-lab 的 Agent" }),
+    ).toHaveFocus();
+    expect(beforeUnload().defaultPrevented).toBe(true);
+
+    fireEvent.click(screen.getByRole("link", { name: "概览" }));
+    expect(
+      screen.getByText("一次性 Agent Token 尚未保存。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回保存 Token" }));
+    expect(await screen.findByText("tp_after_create")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "我已保存 Token" }));
+    expect(beforeUnload().defaultPrevented).toBe(false);
+  });
+
+  it("publishes a deferred rotated token after the management page unmounts", async () => {
+    window.history.replaceState(null, "", "/servers");
+    const rotateResponse = deferredResponse();
+    fetchMock.mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/servers/7/token" && init?.method === "POST") {
+        return rotateResponse.promise;
+      }
+      if (path === "/api/servers") {
+        return Promise.resolve(Response.json([managementServer]));
+      }
+      if (path === "/api/servers/status") {
+        return Promise.resolve(Response.json([]));
+      }
+      return Promise.reject(new Error(`unexpected request: ${path}`));
+    });
+    render(<DashboardRouter />);
+    await screen.findByTestId("managed-server-7");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "重新生成 home-lab 的 Token" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认重新生成 home-lab 的 Token" }),
+    );
+    fireEvent.click(screen.getByRole("link", { name: "概览" }));
+    expect(window.location.pathname).toBe("/");
+
+    fireEvent.click(screen.getByRole("link", { name: "服务器" }));
+    await screen.findByTestId("managed-server-7");
+    expect(
+      screen.getByRole("button", { name: "删除 home-lab" }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      rotateResponse.resolve(
+        Response.json({ server: managementServer, token: "tp_after_rotate" }),
+      );
+    });
+
+    expect(window.location.pathname).toBe("/servers");
+    expect(await screen.findByText("tp_after_rotate")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "安装 home-lab 的 Agent" }),
+    ).toHaveFocus();
   });
 });

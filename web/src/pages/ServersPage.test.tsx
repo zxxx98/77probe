@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import {
   fireEvent,
   render,
@@ -9,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/client";
 import { serverApi, type ServerRecord } from "../servers/api";
-import { ServersPage } from "./ServersPage";
+import { ServersPage, type OneTimeToken } from "./ServersPage";
 
 vi.mock("../servers/api", () => ({
   serverApi: {
@@ -37,12 +38,82 @@ const serverFixture: ServerRecord = {
 };
 
 function renderPage() {
-  return render(<ServersPage />);
+  function TestServersPage() {
+    const [oneTimeToken, setOneTimeToken] = useState<OneTimeToken | null>(null);
+    const [tokenRequestPending, setTokenRequestPending] = useState(false);
+    const [tokenRequestServerId, setTokenRequestServerId] = useState<number | null>(null);
+    const tokenRef = useRef<OneTimeToken | null>(null);
+    const tokenLock = useRef(false);
+
+    return (
+      <ServersPage
+        oneTimeToken={oneTimeToken}
+        tokenRequestPending={tokenRequestPending}
+        tokenRequestServerId={tokenRequestServerId}
+        onTokenRequestStarted={(serverId) => {
+          if (tokenLock.current) {
+            return false;
+          }
+          tokenLock.current = true;
+          setTokenRequestPending(true);
+          setTokenRequestServerId(serverId);
+          return true;
+        }}
+        onTokenRequestFailed={() => {
+          setTokenRequestPending(false);
+          setTokenRequestServerId(null);
+          tokenLock.current = tokenRef.current !== null;
+        }}
+        onTokenPublished={(token) => {
+          tokenRef.current = token;
+          tokenLock.current = true;
+          setOneTimeToken(token);
+          setTokenRequestPending(false);
+          setTokenRequestServerId(null);
+        }}
+        onTokenCleared={() => {
+          tokenRef.current = null;
+          tokenLock.current = false;
+          setOneTimeToken(null);
+        }}
+        onTokenServerDeleted={(serverId) => {
+          setOneTimeToken((current) => {
+            if (current?.serverId !== serverId) {
+              return current;
+            }
+            tokenRef.current = null;
+            tokenLock.current = false;
+            return null;
+          });
+        }}
+        onTokenServerRenamed={(serverId, serverName) => {
+          setOneTimeToken((current) => {
+            if (current?.serverId !== serverId) {
+              return current;
+            }
+            const next = { ...current, serverName };
+            tokenRef.current = next;
+            return next;
+          });
+        }}
+      />
+    );
+  }
+
+  return render(<TestServersPage />);
 }
 
 function deferredServers() {
   let resolve!: (servers: ServerRecord[]) => void;
   const promise = new Promise<ServerRecord[]>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
     resolve = resolvePromise;
   });
   return { promise, resolve };
@@ -110,6 +181,9 @@ describe("ServersPage", () => {
 
     expect(createServer).toHaveBeenCalledWith("home-lab");
     expect(await screen.findByText("tp_secret")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "安装 home-lab 的 Agent" }),
+    ).toHaveFocus();
     expect(screen.getByText("home-lab")).toBeInTheDocument();
     expect(storageWrite).not.toHaveBeenCalled();
     expect(window.location.href).not.toContain("tp_secret");
@@ -117,6 +191,47 @@ describe("ServersPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "我已保存 Token" }));
 
     expect(screen.queryByText("tp_secret")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加服务器" })).toHaveFocus();
+  });
+
+  it("blocks create and rotation while a token request or unsaved token exists", async () => {
+    const secondServer = { ...serverFixture, id: 8, name: "office-lab" };
+    const pendingCreate = deferred<{
+      server: ServerRecord;
+      token: string;
+    }>();
+    listServers.mockResolvedValueOnce([serverFixture, secondServer]);
+    createServer.mockReturnValueOnce(pendingCreate.promise);
+    await loadRow();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加服务器" }));
+    fireEvent.change(screen.getByLabelText("服务器名称"), {
+      target: { value: "new-lab" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(
+      screen.getByRole("button", { name: "重新生成 home-lab 的 Token" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "重新生成 office-lab 的 Token" }),
+    ).toBeDisabled();
+
+    pendingCreate.resolve({
+      server: { ...serverFixture, id: 9, name: "new-lab" },
+      token: "tp_pending",
+    });
+    expect(await screen.findByText("tp_pending")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加服务器" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "重新生成 home-lab 的 Token" }),
+    ).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "我已保存 Token" }));
+    expect(screen.getByRole("button", { name: "添加服务器" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "重新生成 home-lab 的 Token" }),
+    ).toBeEnabled();
   });
 
   it("renames a server inline", async () => {
@@ -227,6 +342,70 @@ describe("ServersPage", () => {
 
     await waitFor(() => expect(rotateToken).toHaveBeenCalledWith(7));
     expect(await screen.findByText("tp_rotated")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "安装 home-lab 的 Agent" }),
+    ).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "我已保存 Token" }));
+    expect(
+      screen.getByRole("button", { name: "重新生成 home-lab 的 Token" }),
+    ).toHaveFocus();
+  });
+
+  it("does not let a delayed deletion clear a newer token from another server", async () => {
+    const secondServer = { ...serverFixture, id: 8, name: "office-lab" };
+    const pendingDelete = deferred<void>();
+    listServers.mockResolvedValueOnce([serverFixture, secondServer]);
+    rotateToken
+      .mockResolvedValueOnce({ server: serverFixture, token: "tp_first" })
+      .mockResolvedValueOnce({ server: secondServer, token: "tp_second" });
+    deleteServer.mockReturnValueOnce(pendingDelete.promise);
+    await loadRow();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "重新生成 home-lab 的 Token" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认重新生成 home-lab 的 Token" }),
+    );
+    expect(await screen.findByText("tp_first")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除 home-lab" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除 home-lab" }));
+    fireEvent.click(screen.getByRole("button", { name: "我已保存 Token" }));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "重新生成 office-lab 的 Token" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认重新生成 office-lab 的 Token" }),
+    );
+    expect(await screen.findByText("tp_second")).toBeInTheDocument();
+
+    pendingDelete.resolve();
+    await waitFor(() =>
+      expect(screen.queryByTestId("managed-server-7")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("tp_second")).toBeInTheDocument();
+  });
+
+  it("moves focus to a surviving row after deletion", async () => {
+    const secondServer = { ...serverFixture, id: 8, name: "office-lab" };
+    listServers.mockResolvedValueOnce([serverFixture, secondServer]);
+    deleteServer.mockResolvedValueOnce();
+    await loadRow();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除 home-lab" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除 home-lab" }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("managed-server-7")).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "重命名 office-lab" }),
+      ).toHaveFocus(),
+    );
   });
 
   it("shows the server message when the initial list request fails", async () => {

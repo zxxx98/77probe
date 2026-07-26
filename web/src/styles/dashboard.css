@@ -539,6 +539,26 @@
   overflow-wrap: anywhere;
 }
 
+.token-reminder {
+  display: flex;
+  width: min(68rem, calc(100% - 4rem));
+  margin: .5rem auto 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .75rem 1rem;
+  border-radius: var(--radius-control);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.token-reminder .button {
+  flex: 0 0 auto;
+  width: auto;
+  margin-top: 0;
+}
+
 .management-heading,
 .install-panel-heading {
   display: flex;
@@ -923,6 +943,10 @@
 }
 
 @media (max-width: 46rem) {
+  .token-reminder {
+    width: calc(100% - 2rem);
+  }
+
   .dashboard-content {
     padding: 2rem 1rem 1.5rem;
   }
@@ -958,6 +982,7 @@
   .detail-section-heading,
   .detail-heading,
   .connection-notice,
+  .token-reminder,
   .management-heading,
   .managed-server-row,
   .inline-confirmation,
@@ -968,6 +993,7 @@
   }
 
   .management-heading,
+  .token-reminder,
   .managed-server-row,
   .inline-confirmation,
   .install-panel-heading,

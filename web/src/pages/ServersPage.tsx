@@ -1,34 +1,59 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { apiErrorMessage } from "../api/client";
 import { ServerForm } from "../components/ServerForm";
 import { ServerInstallPanel } from "../components/ServerInstallPanel";
 import { serverApi, type ServerRecord } from "../servers/api";
+import { useServerCollection } from "../servers/useServerCollection";
 
 type Confirmation = "delete" | "rotate";
-type BusyAction = "rename" | "toggle" | Confirmation;
-
-interface BusyState {
-  serverId: number;
-  action: BusyAction;
-}
-
-interface TokenState {
+export interface OneTimeToken {
   serverId: number;
   serverName: string;
   token: string;
+  returnFocus:
+    | { kind: "create" }
+    | { kind: "rotate"; serverId: number };
 }
 
-function replaceServer(servers: ServerRecord[], next: ServerRecord) {
-  return servers.map((server) => (server.id === next.id ? next : server));
+interface ServersPageProps {
+  oneTimeToken: OneTimeToken | null;
+  tokenRequestPending: boolean;
+  tokenRequestServerId: number | null;
+  onTokenRequestStarted: (serverId: number | null) => boolean;
+  onTokenRequestFailed: () => void;
+  onTokenPublished: (token: OneTimeToken) => void;
+  onTokenCleared: () => void;
+  onTokenServerDeleted: (serverId: number) => void;
+  onTokenServerRenamed: (serverId: number, serverName: string) => void;
 }
 
-export function ServersPage() {
-  const [servers, setServers] = useState<ServerRecord[]>([]);
-  const [loadState, setLoadState] = useState<"loading" | "success" | "error">(
-    "loading",
-  );
-  const [loadError, setLoadError] = useState("");
+type FocusTarget =
+  | { kind: "add" }
+  | { kind: "rotate"; serverId: number }
+  | { kind: "server"; serverId: number };
+
+export function ServersPage({
+  oneTimeToken,
+  tokenRequestPending,
+  tokenRequestServerId,
+  onTokenRequestStarted,
+  onTokenRequestFailed,
+  onTokenPublished,
+  onTokenCleared,
+  onTokenServerDeleted,
+  onTokenServerRenamed,
+}: ServersPageProps) {
+  const {
+    servers,
+    loadState,
+    loadError,
+    pendingByServer,
+    loadServers,
+    addServer,
+    updateServer,
+    removeServer,
+  } = useServerCollection(serverApi.list);
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -37,61 +62,49 @@ export function ServersPage() {
     serverId: number;
     action: Confirmation;
   } | null>(null);
-  const [busy, setBusy] = useState<BusyState | null>(null);
   const [operationError, setOperationError] = useState("");
-  const [tokenState, setTokenState] = useState<TokenState | null>(null);
-
-  const loadServers = async () => {
-    setLoadState("loading");
-    setLoadError("");
-    try {
-      setServers(await serverApi.list());
-      setLoadState("success");
-    } catch (error) {
-      setLoadError(
-        apiErrorMessage(error, "暂时无法读取服务器列表，请稍后重试。"),
-      );
-      setLoadState("error");
-    }
-  };
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const focusAfterUpdate = useRef<FocusTarget | null>(null);
+  const tokenLocked = tokenRequestPending || oneTimeToken !== null;
 
   useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const result = await serverApi.list();
-        if (active) {
-          setServers(result);
-          setLoadState("success");
-        }
-      } catch (error) {
-        if (active) {
-          setLoadError(
-            apiErrorMessage(error, "暂时无法读取服务器列表，请稍后重试。"),
-          );
-          setLoadState("error");
-        }
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
-  }, []);
+    const requested = focusAfterUpdate.current;
+    if (!requested) {
+      return;
+    }
+    let target: HTMLElement | null = null;
+    if (requested.kind === "rotate") {
+      target = document.getElementById(`rotate-token-${requested.serverId}`);
+    } else if (requested.kind === "server") {
+      target = document.getElementById(`server-primary-action-${requested.serverId}`);
+    }
+    if (!target || (target instanceof HTMLButtonElement && target.disabled)) {
+      target = addButtonRef.current;
+    }
+    if (target && !(target instanceof HTMLButtonElement && target.disabled)) {
+      target.focus();
+      focusAfterUpdate.current = null;
+    }
+  }, [oneTimeToken, servers, tokenRequestPending]);
 
   const create = async (name: string) => {
+    if (!onTokenRequestStarted(null)) {
+      return;
+    }
     setCreating(true);
     setOperationError("");
     try {
       const result = await serverApi.create(name);
-      setServers((current) => [...current, result.server]);
-      setTokenState({
+      addServer(result.server);
+      onTokenPublished({
         serverId: result.server.id,
         serverName: result.server.name,
         token: result.token,
+        returnFocus: { kind: "create" },
       });
       setShowCreate(false);
     } catch (error) {
+      onTokenRequestFailed();
       setOperationError(
         apiErrorMessage(error, "暂时无法创建服务器，请稍后重试。"),
       );
@@ -113,33 +126,33 @@ export function ServersPage() {
     if (name === "" || name === server.name) {
       return;
     }
-    setBusy({ serverId: server.id, action: "rename" });
     setOperationError("");
     try {
-      const updated = await serverApi.update(server.id, { name });
-      setServers((current) => replaceServer(current, updated));
-      setTokenState((current) =>
-        current?.serverId === updated.id
-          ? { ...current, serverName: updated.name }
-          : current,
+      const outcome = await updateServer(
+        server.id,
+        "rename",
+        () => serverApi.update(server.id, { name }),
       );
-      setEditingId(null);
+      if (outcome.applied) {
+        onTokenServerRenamed(server.id, name);
+        setEditingId(null);
+      }
     } catch (error) {
       setOperationError(
         apiErrorMessage(error, "暂时无法重命名服务器，请稍后重试。"),
       );
-    } finally {
-      setBusy(null);
     }
   };
 
   const toggle = async (server: ServerRecord) => {
     const enabled = !server.enabled;
-    setBusy({ serverId: server.id, action: "toggle" });
     setOperationError("");
     try {
-      const updated = await serverApi.update(server.id, { enabled });
-      setServers((current) => replaceServer(current, updated));
+      await updateServer(
+        server.id,
+        "toggle",
+        () => serverApi.update(server.id, { enabled }),
+      );
     } catch (error) {
       setOperationError(
         apiErrorMessage(
@@ -147,49 +160,71 @@ export function ServersPage() {
           `暂时无法${enabled ? "启用" : "停用"}服务器，请稍后重试。`,
         ),
       );
-    } finally {
-      setBusy(null);
     }
   };
 
   const remove = async (server: ServerRecord) => {
-    setBusy({ serverId: server.id, action: "delete" });
+    const index = servers.findIndex((item) => item.id === server.id);
+    const survivor = servers[index + 1] ?? servers[index - 1];
+    focusAfterUpdate.current = survivor
+      ? { kind: "server", serverId: survivor.id }
+      : { kind: "add" };
     setOperationError("");
     try {
-      await serverApi.remove(server.id);
-      setServers((current) => current.filter((item) => item.id !== server.id));
-      setConfirmation(null);
-      if (tokenState?.serverId === server.id) {
-        setTokenState(null);
+      const outcome = await removeServer(
+        server.id,
+        () => serverApi.remove(server.id),
+      );
+      if (outcome.applied) {
+        setConfirmation(null);
+        onTokenServerDeleted(server.id);
       }
     } catch (error) {
+      focusAfterUpdate.current = null;
       setOperationError(
         apiErrorMessage(error, "暂时无法删除服务器，请稍后重试。"),
       );
-    } finally {
-      setBusy(null);
     }
   };
 
   const rotate = async (server: ServerRecord) => {
-    setBusy({ serverId: server.id, action: "rotate" });
+    if (!onTokenRequestStarted(server.id)) {
+      return;
+    }
     setOperationError("");
     try {
-      const result = await serverApi.rotateToken(server.id);
-      setServers((current) => replaceServer(current, result.server));
-      setTokenState({
-        serverId: result.server.id,
-        serverName: result.server.name,
-        token: result.token,
+      let token = "";
+      const outcome = await updateServer(server.id, "rotate", async () => {
+        const result = await serverApi.rotateToken(server.id);
+        token = result.token;
+        return result.server;
       });
-      setConfirmation(null);
+      if (outcome.applied) {
+        onTokenPublished({
+          serverId: server.id,
+          serverName: server.name,
+          token,
+          returnFocus: { kind: "rotate", serverId: server.id },
+        });
+        setConfirmation(null);
+      } else {
+        onTokenRequestFailed();
+      }
     } catch (error) {
+      onTokenRequestFailed();
       setOperationError(
         apiErrorMessage(error, "暂时无法重新生成 Token，请稍后重试。"),
       );
-    } finally {
-      setBusy(null);
     }
+  };
+
+  const clearToken = () => {
+    if (oneTimeToken?.returnFocus.kind === "rotate") {
+      focusAfterUpdate.current = oneTimeToken.returnFocus;
+    } else {
+      focusAfterUpdate.current = { kind: "add" };
+    }
+    onTokenCleared();
   };
 
   return (
@@ -206,10 +241,11 @@ export function ServersPage() {
           </p>
         </div>
         <button
+          ref={addButtonRef}
           className="button button-primary management-add-button"
           type="button"
           aria-expanded={showCreate}
-          disabled={creating || loadState === "loading"}
+          disabled={creating || loadState === "loading" || tokenLocked}
           onClick={() => {
             setShowCreate((current) => !current);
             setOperationError("");
@@ -222,7 +258,7 @@ export function ServersPage() {
       {showCreate ? (
         <section className="server-create-panel" aria-label="添加服务器">
           <ServerForm
-            disabled={creating || loadState === "loading"}
+            disabled={creating || loadState === "loading" || tokenLocked}
             submitting={creating}
             onSubmit={create}
             onCancel={() => setShowCreate(false)}
@@ -236,11 +272,11 @@ export function ServersPage() {
         </p>
       ) : null}
 
-      {tokenState ? (
+      {oneTimeToken ? (
         <ServerInstallPanel
-          serverName={tokenState.serverName}
-          token={tokenState.token}
-          onTokenCleared={() => setTokenState(null)}
+          serverName={oneTimeToken.serverName}
+          token={oneTimeToken.token}
+          onTokenCleared={clearToken}
         />
       ) : null}
 
@@ -256,7 +292,12 @@ export function ServersPage() {
         <section className="dashboard-state" role="alert">
           <div>
             <h2>服务器列表没有加载成功</h2>
-            <p>{loadError}</p>
+            <p>
+              {apiErrorMessage(
+                loadError,
+                "暂时无法读取服务器列表，请稍后重试。",
+              )}
+            </p>
           </div>
           <button
             className="button button-secondary"
@@ -287,7 +328,10 @@ export function ServersPage() {
           </div>
           <div className="managed-server-list">
             {servers.map((server) => {
-              const rowBusy = busy?.serverId === server.id;
+              const rowPending = pendingByServer[server.id];
+              const rowBusy =
+                rowPending !== undefined ||
+                (tokenRequestPending && tokenRequestServerId === server.id);
               const renaming = editingId === server.id;
               const confirming = confirmation?.serverId === server.id;
               return (
@@ -359,6 +403,7 @@ export function ServersPage() {
                   {!renaming ? (
                     <div className="managed-server-actions">
                       <button
+                        id={`server-primary-action-${server.id}`}
                         className="button button-quiet"
                         type="button"
                         disabled={rowBusy}
@@ -374,16 +419,17 @@ export function ServersPage() {
                         aria-label={`${server.enabled ? "停用" : "启用"} ${server.name}`}
                         onClick={() => void toggle(server)}
                       >
-                        {rowBusy && busy?.action === "toggle"
+                        {rowPending?.action === "toggle"
                           ? "处理中…"
                           : server.enabled
                             ? "停用"
                             : "启用"}
                       </button>
                       <button
+                        id={`rotate-token-${server.id}`}
                         className="button button-quiet"
                         type="button"
-                        disabled={rowBusy}
+                        disabled={rowBusy || tokenLocked}
                         aria-label={`重新生成 ${server.name} 的 Token`}
                         onClick={() => {
                           setConfirmation({ serverId: server.id, action: "rotate" });
@@ -429,7 +475,10 @@ export function ServersPage() {
                         <button
                           className={`button ${confirmation.action === "delete" ? "button-danger" : "button-primary"}`}
                           type="button"
-                          disabled={rowBusy}
+                          disabled={
+                            rowBusy ||
+                            (confirmation.action === "rotate" && tokenLocked)
+                          }
                           aria-label={`确认${confirmation.action === "delete" ? "删除" : "重新生成"} ${server.name}${confirmation.action === "rotate" ? " 的 Token" : ""}`}
                           onClick={() =>
                             void (confirmation.action === "delete"
@@ -437,7 +486,9 @@ export function ServersPage() {
                               : rotate(server))
                           }
                         >
-                          {rowBusy ? "处理中…" : "确认"}
+                          {rowPending?.action === confirmation.action
+                            ? "处理中…"
+                            : "确认"}
                         </button>
                         <button
                           className="button button-quiet"

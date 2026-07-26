@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 type Architecture = "amd64" | "arm64";
 
@@ -40,18 +40,26 @@ export function ServerInstallPanel({
   token,
   onTokenCleared,
 }: ServerInstallPanelProps) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const [architecture, setArchitecture] = useState<Architecture>("amd64");
   const [copyFeedback, setCopyFeedback] = useState<{
     message: string;
     failed: boolean;
   } | null>(null);
+  const [tokenAnnouncement, setTokenAnnouncement] = useState("");
   const origin = window.location.origin;
   const filename = `tinyprobe-agent-linux-${architecture}`;
   const downloadCommand = `curl --fail --location --output ${filename} ${origin}/downloads/${filename}`;
   const environmentFile = `TINYPROBE_SERVER_URL=${origin}/api/agent/v1/report\nTINYPROBE_AGENT_TOKEN=${token}`;
   const installCommands = `sudo install -m 0755 ${filename} /usr/local/bin/tinyprobe-agent
+read -rsp 'Agent Token: ' TINYPROBE_AGENT_TOKEN
+printf '\\n'
 sudo install -m 0600 /dev/null /etc/tinyprobe-agent.env
-sudo sh -c 'printf "%s\\n" "TINYPROBE_SERVER_URL=${origin}/api/agent/v1/report" "TINYPROBE_AGENT_TOKEN=${token}" > /etc/tinyprobe-agent.env'
+printf '%s\\n' \\
+  'TINYPROBE_SERVER_URL=${origin}/api/agent/v1/report' \\
+  "TINYPROBE_AGENT_TOKEN=$TINYPROBE_AGENT_TOKEN" |
+  sudo tee /etc/tinyprobe-agent.env >/dev/null
+unset TINYPROBE_AGENT_TOKEN
 sudo tee /etc/systemd/system/tinyprobe-agent.service > /dev/null <<'EOF'
 [Unit]
 Description=TinyProbe Agent
@@ -91,6 +99,18 @@ ReadOnlyPaths=/proc /sys
 [Install]
 WantedBy=multi-user.target`;
 
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [serverName, token]);
+
+  useEffect(() => {
+    setTokenAnnouncement("");
+    const timeout = window.setTimeout(() => {
+      setTokenAnnouncement("一次性 Agent Token 已准备好，请立即保存。");
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [token]);
+
   const copy = async (label: string, value: string) => {
     try {
       if (!navigator.clipboard) {
@@ -107,9 +127,13 @@ WantedBy=multi-user.target`;
     event: KeyboardEvent<HTMLButtonElement>,
   ) => {
     let next: Architecture | null = null;
-    if (event.key === "ArrowRight" || event.key === "End") {
+    if (event.key === "ArrowRight") {
+      next = architecture === "amd64" ? "arm64" : "amd64";
+    } else if (event.key === "ArrowLeft") {
+      next = architecture === "amd64" ? "arm64" : "amd64";
+    } else if (event.key === "End") {
       next = "arm64";
-    } else if (event.key === "ArrowLeft" || event.key === "Home") {
+    } else if (event.key === "Home") {
       next = "amd64";
     }
     if (!next) {
@@ -128,7 +152,9 @@ WantedBy=multi-user.target`;
             <span className="status-dot" aria-hidden="true" />
             Token 只在这里完整显示一次
           </p>
-          <h2 id="install-panel-title">安装 {serverName} 的 Agent</h2>
+          <h2 id="install-panel-title" ref={headingRef} tabIndex={-1}>
+            安装 {serverName} 的 Agent
+          </h2>
           <p>先保存 Token，再选择服务器架构并依次执行下面的命令。</p>
         </div>
         <button
@@ -139,6 +165,14 @@ WantedBy=multi-user.target`;
           我已保存 Token
         </button>
       </div>
+
+      <p
+        className="sr-only"
+        aria-live="polite"
+        data-testid="token-ready-announcement"
+      >
+        {tokenAnnouncement}
+      </p>
 
       <div className="one-time-token" aria-label="一次性 Agent Token">
         <span>Agent Token</span>

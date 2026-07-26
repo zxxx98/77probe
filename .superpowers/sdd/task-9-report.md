@@ -426,3 +426,150 @@ agent.browsers.list(): []
 ```
 
 A temporary local server did pass `/api/health` before browser discovery, and all temporary database/log files were removed. No screenshot or live viewport inspection could be produced in this environment.
+
+---
+
+## Quality-review fixes
+
+Fix-turn base: `fdabe41e7b58563a82c9233d04262268152cad9b`.
+
+### Download method safety and streaming
+
+Focused RED:
+
+```text
+go test ./internal/httpapi -run 'TestAgentDownloadHandler' -count=1
+Content-Type="text/plain; charset=utf-8", want application/octet-stream
+TestAgentDownloadHandlerRejectsUnsupportedMethodsBeforeOpeningFile: status=200 body="binary"
+FAIL probe.local/monitor/internal/httpapi
+```
+
+Focused GREEN after switching to `http.ServeFileFS`, rejecting non-GET/HEAD before filesystem access, and adding attachment/binary headers:
+
+```text
+ok probe.local/monitor/internal/httpapi 1.015s
+```
+
+Coverage now includes HEAD, `405` plus `Allow: GET, HEAD`, ranges, missing files, a production-sized in-memory binary, and an aborting response writer that proves the whole file is not read before streaming begins.
+
+### Token-free executable install commands
+
+Focused RED:
+
+```text
+Test Files 1 failed (1)
+Tests 2 failed | 4 passed (6)
+Expected install commands not to contain tp_one_time; raw token was present.
+ArrowRight from arm64 did not wrap to amd64.
+```
+
+Focused GREEN:
+
+```text
+Test Files 1 passed (1)
+Tests 6 passed (6)
+```
+
+The executable block now uses `read -rsp`, writes through `sudo tee` to a root-created `0600` environment file, and unsets the shell variable. The raw token remains only in the separately displayed one-time value/reference.
+
+### Request generations and list ordering
+
+Initial hook RED:
+
+```text
+Failed to resolve import "./useServerCollection"
+Test Files 1 failed (1)
+```
+
+The new collection hook received deferred-promise tests for independent rows, same-row stale whole-record responses, and list/mutation ordering. A self-review added the missing interleaving where a list begins during a mutation:
+
+```text
+Test Files 1 failed (1)
+Tests 1 failed | 3 passed (4)
+- Expected enabled: false
++ Received enabled: true
+```
+
+GREEN after advancing the mutation revision on successful completion as well as request start:
+
+```text
+Test Files 1 passed (1)
+Tests 4 passed (4)
+```
+
+### Token serialization, shell lifecycle, navigation, and focus
+
+Focused page RED established the original failures:
+
+```text
+ServersPage: 5 failed
+- install heading did not receive focus
+- rotation remained enabled during a token-producing request
+- rotation acknowledgement did not restore focus
+- delayed delete A cleared the newer token for B
+- deletion did not focus the surviving row
+```
+
+The one-time token and token-request lock now live only in `DashboardRouter` memory. Create/rotation are atomically serialized; deletion uses a functional token setter; pending create/rotation responses publish after page unmount; an unload guard remains active while a request or unsaved token exists; and non-management routes show an inline return reminder.
+
+Additional lifecycle RED/GREEN evidence:
+
+```text
+Pending rotation after route remount:
+RED: 删除 home-lab was not disabled
+GREEN: 1 passed | 8 skipped
+
+Pending create after returning to /servers:
+RED: Unable to find [data-testid="managed-server-7"]
+GREEN: 1 passed | 8 skipped
+```
+
+The shell retains the pending rotation server ID so the full row remains locked across remounts. Publishing a token advances the management-page generation, forcing a fresh list after a deferred create/rotation.
+
+The install heading is programmatically focused. A persistent, initially empty `aria-live="polite"` region is populated asynchronously when each token becomes ready. Acknowledgement restores focus to Add or the originating rotation control; deletion focuses a surviving row or Add.
+
+Persistent live-region RED/GREEN:
+
+```text
+RED: Unable to find [data-testid="token-ready-announcement"]
+GREEN: 1 passed | 6 skipped
+```
+
+### Browser verification
+
+The browser control surface was available for this fix turn. The authenticated create/install flow and the unsaved-token reminder were inspected at desktop and narrow mobile widths. The live accessibility tree showed the install heading focused, the rotation control disabled while the token was unsaved, and the executable block without the raw token. Mobile Lighthouse snapshot scores:
+
+```text
+Accessibility: 100
+Best Practices: 100
+```
+
+### Final verification
+
+```text
+pnpm --dir web test -- --run
+Test Files 13 passed (13)
+Tests 86 passed (86)
+Exit code 0
+
+pnpm --dir web lint
+tsc -b --pretty false
+Exit code 0
+
+pnpm --dir web build
+48 modules transformed
+internal/webui/dist/assets/index-BnV3jBIA.css
+internal/webui/dist/assets/index-CDGWcsni.js
+Exit code 0
+
+C:\Program Files\Go\bin\go.exe test ./...
+All packages passed; exit code 0
+
+C:\Program Files\Go\bin\go.exe vet ./...
+No findings; exit code 0
+
+git diff --check
+No whitespace errors; exit code 0
+```
+
+Independent review found the list-during-mutation, route-remount rotation lock, streaming-test, live-region, and deferred-create remount gaps during successive passes. Each was reproduced or strengthened with focused coverage and corrected. No Task 10 binaries or behavior were added.
