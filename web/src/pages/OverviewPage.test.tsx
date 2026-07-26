@@ -164,7 +164,11 @@ describe("OverviewPage", () => {
   });
 
   it("keeps a successful empty state visible when the live connection drops", async () => {
-    fetchMock.mockResolvedValueOnce(Response.json([]));
+    fetchMock
+      .mockResolvedValueOnce(Response.json([]))
+      .mockResolvedValueOnce(
+        Response.json({ error: "状态服务暂时不可用" }, { status: 503 }),
+      );
 
     render(<OverviewPage onNavigate={vi.fn()} />);
     act(() => FakeEventSource.instances[0]?.open());
@@ -176,6 +180,21 @@ describe("OverviewPage", () => {
     expect(screen.getByText("还没有服务器来报到")).toBeInTheDocument();
     expect(screen.getByText("实时连接已断开")).toBeInTheDocument();
     expect(screen.queryByText("这次没有取到状态")).not.toBeInTheDocument();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "立即刷新" }).click();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("还没有服务器来报到")).toBeInTheDocument();
+    expect(screen.getByText("实时连接已断开")).toBeInTheDocument();
+    expect(screen.getByText(/状态服务暂时不可用/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即刷新" })).toBeEnabled();
+
+    act(() => FakeEventSource.instances[0]?.fail());
+
+    expect(screen.getByText("实时连接已断开")).toBeInTheDocument();
+    expect(screen.getByText(/状态服务暂时不可用/)).toBeInTheDocument();
   });
 
   it("keeps stale current data visible when the live connection drops", async () => {

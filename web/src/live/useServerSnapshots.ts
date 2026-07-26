@@ -87,14 +87,18 @@ type InitialLoadStatus = "pending" | "success" | "error";
 
 interface OverviewServerSnapshotsState extends ServerSnapshotsState {
   initialLoadStatus: InitialLoadStatus;
+  connectionFailed: boolean;
+  requestError: string | null;
 }
 
 function useServerSnapshotsState(): OverviewServerSnapshotsState {
   const [snapshots, setSnapshots] = useState<ServerSnapshot[]>([]);
   const [liveConnected, setLiveConnected] = useState(false);
+  const [connectionFailed, setConnectionFailed] = useState(false);
   const [initialLoadStatus, setInitialLoadStatus] =
     useState<InitialLoadStatus>("pending");
   const [error, setError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const openedRef = useRef(false);
   const connectionFailedRef = useRef(false);
@@ -126,6 +130,7 @@ function useServerSnapshotsState(): OverviewServerSnapshotsState {
           requestRevision,
         ),
       );
+      setRequestError(null);
       setError((current) => (current === CONNECTION_ERROR ? current : null));
     } catch (loadError) {
       if (
@@ -138,7 +143,9 @@ function useServerSnapshotsState(): OverviewServerSnapshotsState {
       setInitialLoadStatus((current) =>
         current === "success" ? current : "error",
       );
-      setError(apiErrorMessage(loadError, LOAD_ERROR));
+      const message = apiErrorMessage(loadError, LOAD_ERROR);
+      setRequestError(message);
+      setError(message);
     } finally {
       controllersRef.current.delete(controller);
     }
@@ -168,6 +175,7 @@ function useServerSnapshotsState(): OverviewServerSnapshotsState {
         return;
       }
       setLiveConnected(true);
+      setConnectionFailed(false);
       setError((current) => (current === CONNECTION_ERROR ? null : current));
       if (openedRef.current || connectionFailedRef.current) {
         void refresh();
@@ -180,6 +188,7 @@ function useServerSnapshotsState(): OverviewServerSnapshotsState {
         return;
       }
       setLiveConnected(false);
+      setConnectionFailed(true);
       connectionFailedRef.current = true;
       setError(CONNECTION_ERROR);
     };
@@ -198,6 +207,8 @@ function useServerSnapshotsState(): OverviewServerSnapshotsState {
     error,
     refresh,
     initialLoadStatus,
+    connectionFailed,
+    requestError,
   };
 }
 

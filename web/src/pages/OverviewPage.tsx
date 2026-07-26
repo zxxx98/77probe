@@ -8,6 +8,40 @@ interface OverviewPageProps {
   onNavigate: (path: string) => void;
 }
 
+interface CurrentErrorNoticeProps {
+  disconnected: boolean;
+  requestError: string | null;
+  onRetry: (event: MouseEvent<HTMLButtonElement>) => void;
+}
+
+function CurrentErrorNotice({
+  disconnected,
+  requestError,
+  onRetry,
+}: CurrentErrorNoticeProps) {
+  if (!disconnected && !requestError) {
+    return null;
+  }
+
+  const message = disconnected
+    ? requestError
+      ? `页面仍在自动重连；刷新也没有成功：${requestError} 当前结果仍可继续查看。`
+      : "页面会自动重连；当前结果仍可继续查看。"
+    : `${requestError} 当前结果仍可继续查看。`;
+
+  return (
+    <div className="connection-notice" role={requestError ? "alert" : "status"}>
+      <div>
+        <strong>{disconnected ? "实时连接已断开" : "刷新没有成功"}</strong>
+        <p>{message}</p>
+      </div>
+      <button className="button button-secondary" type="button" onClick={onRetry}>
+        立即刷新
+      </button>
+    </div>
+  );
+}
+
 function statusCopy(total: number, online: number): string {
   const offline = total - online;
   if (total === 0) {
@@ -20,8 +54,15 @@ function statusCopy(total: number, online: number): string {
 }
 
 export function OverviewPage({ onNavigate }: OverviewPageProps) {
-  const { snapshots, connected, error, refresh, initialLoadStatus } =
-    useOverviewServerSnapshots();
+  const {
+    snapshots,
+    connected,
+    error,
+    refresh,
+    initialLoadStatus,
+    connectionFailed,
+    requestError,
+  } = useOverviewServerSnapshots();
   const online = snapshots.filter((snapshot) => snapshot.online).length;
   const initialLoading =
     snapshots.length === 0 && initialLoadStatus === "pending";
@@ -29,7 +70,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
     snapshots.length === 0 && initialLoadStatus === "error";
   const initialEmpty =
     snapshots.length === 0 && initialLoadStatus === "success";
-  const disconnected = Boolean(error?.startsWith("实时连接已断开"));
+  const disconnected = connectionFailed;
   const introHeading = initialLoading
     ? "正在确认服务器状态"
     : initialError
@@ -99,16 +140,12 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
         </section>
       ) : null}
 
-      {initialEmpty && disconnected ? (
-        <div className="connection-notice" role="status">
-          <div>
-            <strong>实时连接已断开</strong>
-            <p>页面会自动重连；服务器列表仍显示最近一次获取到的结果。</p>
-          </div>
-          <button className="button button-secondary" type="button" onClick={retry}>
-            立即刷新
-          </button>
-        </div>
+      {initialEmpty ? (
+        <CurrentErrorNotice
+          disconnected={disconnected}
+          requestError={requestError}
+          onRetry={retry}
+        />
       ) : null}
 
       {snapshots.length > 0 ? (
@@ -127,24 +164,11 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
             </p>
           </div>
 
-          {disconnected ? (
-            <div className="connection-notice" role="status">
-              <div>
-                <strong>实时连接已断开</strong>
-                <p>页面会自动重连；下方仍保留最近一次可用数据。</p>
-              </div>
-              <button className="button button-secondary" type="button" onClick={retry}>
-                立即刷新
-              </button>
-            </div>
-          ) : error ? (
-            <div className="connection-notice" role="alert">
-              <div>
-                <strong>刷新没有成功</strong>
-                <p>{error} 当前数据仍可继续查看。</p>
-              </div>
-            </div>
-          ) : null}
+          <CurrentErrorNotice
+            disconnected={disconnected}
+            requestError={requestError}
+            onRetry={retry}
+          />
 
           <div className="server-list">
             {snapshots.map((snapshot) => (
