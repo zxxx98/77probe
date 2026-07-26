@@ -1,13 +1,16 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"probe.local/monitor/internal/auth"
 	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/servers"
+	"probe.local/monitor/internal/webui"
 )
 
 type Dependencies struct {
@@ -18,6 +21,7 @@ type Dependencies struct {
 
 func NewRouter(deps Dependencies) http.Handler {
 	r := chi.NewRouter()
+	spa := webui.Handler()
 	r.Get("/api/health", health)
 
 	authHandler := auth.NewHandler(deps.Auth)
@@ -38,6 +42,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Patch("/api/servers/{id}", serverHandler.Update)
 		r.Delete("/api/servers/{id}", serverHandler.Delete)
 		r.Post("/api/servers/{id}/token", serverHandler.RotateToken)
+	})
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+			return
+		}
+		spa.ServeHTTP(w, r)
 	})
 	return r
 }
