@@ -81,7 +81,7 @@ p {
 }
 
 .skip-link:focus-visible {
-  outline: 3px solid var(--color-primary-soft);
+  outline: 3px solid var(--color-primary);
   outline-offset: 3px;
   transform: translateY(0);
 }
@@ -222,7 +222,7 @@ p {
 
 .form-error {
   background: var(--color-surface-strong);
-  color: var(--color-danger);
+  color: var(--color-danger-text);
   overflow-wrap: anywhere;
 }
 
@@ -274,7 +274,7 @@ p {
 .button:focus-visible,
 .brand:focus-visible,
 .nav-link:focus-visible {
-  outline: 3px solid var(--color-primary-soft);
+  outline: 3px solid var(--color-primary);
   outline-offset: 3px;
 }
 

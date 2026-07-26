@@ -9,6 +9,7 @@
   --color-success: oklch(.67 .16 151);
   --color-warning: oklch(.72 .16 60);
   --color-danger: oklch(.61 .20 25);
+  --color-danger-text: oklch(.45 .16 25);
   --radius-panel: 14px;
   --radius-control: 10px;
   --shadow-panel: 0 4px 8px oklch(.25 .02 330 / .07);
