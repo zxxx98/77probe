@@ -67,19 +67,22 @@ func (s *Service) CreateAdmin(ctx context.Context, username, password string) er
 
 func (s *Service) Login(ctx context.Context, username, password string) (string, time.Time, error) {
 	var id int64
+	var storedUsername string
 	var encoded string
-	unknownUser := false
-	if err := s.db.QueryRowContext(ctx, `SELECT id, password_hash FROM admins WHERE username=?`, username).Scan(&id, &encoded); err != nil {
+	usernameMismatch := false
+	if err := s.db.QueryRowContext(ctx, `SELECT id, username, password_hash FROM admins LIMIT 1`).Scan(&id, &storedUsername, &encoded); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			encoded = dummyPasswordHash
-			unknownUser = true
+			usernameMismatch = true
 		} else {
 			return "", time.Time{}, err
 		}
+	} else {
+		usernameMismatch = storedUsername != username
 	}
 
 	ok, err := s.verifyPassword(password, encoded)
-	if err != nil || !ok || unknownUser {
+	if err != nil || !ok || usernameMismatch {
 		return "", time.Time{}, ErrInvalidLogin
 	}
 
