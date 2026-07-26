@@ -37,19 +37,26 @@ func (s *Store) UpsertFrom(server servers.Server, report protocol.AgentReport, r
 		Online:         true,
 		LastReceivedAt: receivedAt,
 		SourceIP:       sourceIP,
-		Report:         report,
+		Report:         cloneReport(report),
 	}
 	s.mu.Lock()
 	s.snapshots[server.ID] = snapshot
 	s.mu.Unlock()
-	return snapshot
+	return cloneSnapshot(snapshot)
+}
+
+func cloneReport(report protocol.AgentReport) protocol.AgentReport {
+	if report.Disks != nil {
+		report.Disks = append([]protocol.DiskStats(nil), report.Disks...)
+	}
+	return report
 }
 
 func (s *Store) Get(serverID int64) (Snapshot, bool) {
 	s.mu.RLock()
 	snapshot, ok := s.snapshots[serverID]
 	s.mu.RUnlock()
-	return snapshot, ok
+	return cloneSnapshot(snapshot), ok
 }
 
 func (s *Store) MarkOffline(cutoff time.Time) []Snapshot {
@@ -60,8 +67,30 @@ func (s *Store) MarkOffline(cutoff time.Time) []Snapshot {
 		if snapshot.Online && snapshot.LastReceivedAt.Before(cutoff) {
 			snapshot.Online = false
 			s.snapshots[serverID] = snapshot
-			changed = append(changed, snapshot)
+			changed = append(changed, cloneSnapshot(snapshot))
 		}
 	}
 	return changed
+}
+
+func (s *Store) rename(serverID int64, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot, ok := s.snapshots[serverID]
+	if !ok {
+		return
+	}
+	snapshot.ServerName = name
+	s.snapshots[serverID] = snapshot
+}
+
+func (s *Store) delete(serverID int64) {
+	s.mu.Lock()
+	delete(s.snapshots, serverID)
+	s.mu.Unlock()
+}
+
+func cloneSnapshot(snapshot Snapshot) Snapshot {
+	snapshot.Report = cloneReport(snapshot.Report)
+	return snapshot
 }

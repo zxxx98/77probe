@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"probe.local/monitor/internal/live"
+	"probe.local/monitor/internal/protocol"
 )
 
 func TestHubOverflowDropsOldestAndKeepsNewest(t *testing.T) {
@@ -39,5 +40,24 @@ func TestHubSlowSubscriberDoesNotBlockAnotherSubscriber(t *testing.T) {
 		if got := <-fast; got.Type != fmt.Sprintf("event-%d", want) {
 			t.Fatalf("event=%q want=event-%d", got.Type, want)
 		}
+	}
+}
+
+func TestHubDeliversDetachedEventDisksToEachSubscriber(t *testing.T) {
+	hub := live.NewHub()
+	first, cancelFirst := hub.Subscribe()
+	defer cancelFirst()
+	second, cancelSecond := hub.Subscribe()
+	defer cancelSecond()
+	event := live.Event{Snapshot: live.Snapshot{Report: protocol.AgentReport{Disks: []protocol.DiskStats{{Mountpoint: "/original"}}}}}
+
+	hub.Publish(event)
+	event.Snapshot.Report.Disks[0].Mountpoint = "/input-mutated"
+	firstEvent := <-first
+	firstEvent.Snapshot.Report.Disks[0].Mountpoint = "/subscriber-mutated"
+	secondEvent := <-second
+
+	if secondEvent.Snapshot.Report.Disks[0].Mountpoint != "/original" {
+		t.Fatalf("second subscriber mountpoint=%q", secondEvent.Snapshot.Report.Disks[0].Mountpoint)
 	}
 }

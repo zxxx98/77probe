@@ -22,19 +22,25 @@ func (h *Hub) Publish(event Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for subscriber := range h.subscribers {
+		delivery := cloneEvent(event)
 		select {
-		case subscriber <- event:
+		case subscriber <- delivery:
 		default:
 			select {
 			case <-subscriber:
 			default:
 			}
 			select {
-			case subscriber <- event:
+			case subscriber <- delivery:
 			default:
 			}
 		}
 	}
+}
+
+func cloneEvent(event Event) Event {
+	event.Snapshot = cloneSnapshot(event.Snapshot)
+	return event
 }
 
 func (h *Hub) Subscribe() (<-chan Event, func()) {

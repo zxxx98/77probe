@@ -28,12 +28,13 @@ func newRuntime(conn *sql.DB) *runtime {
 	serverService := servers.NewService(conn)
 	store := live.NewStore()
 	hub := live.NewHub()
-	liveHandler := live.NewHandler(serverService, store, hub)
+	coordinator := live.NewCoordinator(serverService, store, hub)
+	liveHandler := live.NewHandler(serverService, store, hub, live.WithCoordinator(coordinator))
 	return &runtime{
 		handler: httpapi.NewRouter(httpapi.Dependencies{Auth: authService, Servers: serverService, Live: liveHandler}),
 		servers: serverService,
 		store:   store,
-		sweeper: live.NewSweeper(store, hub),
+		sweeper: live.NewSweeper(store, hub, live.WithSweeperCoordinator(coordinator)),
 	}
 }
 

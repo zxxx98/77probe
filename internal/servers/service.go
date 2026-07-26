@@ -30,9 +30,19 @@ type Server struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+type RegistryObserver interface {
+	ReconcileUpdate(func() (Server, error)) (Server, error)
+	ReconcileDelete(int64, func() error) error
+}
+
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db               *sql.DB
+	now              func() time.Time
+	registryObserver RegistryObserver
+}
+
+func (s *Service) SetRegistryObserver(observer RegistryObserver) {
+	s.registryObserver = observer
 }
 
 func NewService(conn *sql.DB) *Service {
@@ -111,36 +121,48 @@ func (s *Service) Update(ctx context.Context, id int64, name *string, enabled *b
 		}
 		name = &trimmed
 	}
-	now := s.now().UTC()
-	var row scanner
-	switch {
-	case name != nil && enabled != nil:
-		row = s.db.QueryRowContext(ctx, `UPDATE servers SET name=?, enabled=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *name, *enabled, now.Format(time.RFC3339Nano), id)
-	case name != nil:
-		row = s.db.QueryRowContext(ctx, `UPDATE servers SET name=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *name, now.Format(time.RFC3339Nano), id)
-	default:
-		row = s.db.QueryRowContext(ctx, `UPDATE servers SET enabled=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *enabled, now.Format(time.RFC3339Nano), id)
+	update := func() (Server, error) {
+		now := s.now().UTC()
+		var row scanner
+		switch {
+		case name != nil && enabled != nil:
+			row = s.db.QueryRowContext(ctx, `UPDATE servers SET name=?, enabled=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *name, *enabled, now.Format(time.RFC3339Nano), id)
+		case name != nil:
+			row = s.db.QueryRowContext(ctx, `UPDATE servers SET name=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *name, now.Format(time.RFC3339Nano), id)
+		default:
+			row = s.db.QueryRowContext(ctx, `UPDATE servers SET enabled=?, updated_at=? WHERE id=? RETURNING id, name, enabled, agent_version, created_at, updated_at`, *enabled, now.Format(time.RFC3339Nano), id)
+		}
+		server, err := scanServer(row)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Server{}, ErrNotFound
+		}
+		return server, err
 	}
-	server, err := scanServer(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Server{}, ErrNotFound
+	if s.registryObserver != nil {
+		return s.registryObserver.ReconcileUpdate(update)
 	}
-	return server, err
+	return update()
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=?`, id)
-	if err != nil {
-		return err
+	remove := func() error {
+		result, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id=?`, id)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return ErrNotFound
+		}
+		return nil
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
+	if s.registryObserver != nil {
+		return s.registryObserver.ReconcileDelete(id, remove)
 	}
-	if count == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return remove()
 }
 
 func (s *Service) RotateToken(ctx context.Context, id int64) (string, error) {

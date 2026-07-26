@@ -27,6 +27,59 @@ func TestUpsertStoresLatestOnlineSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreClonesReportDisksOnInsertion(t *testing.T) {
+	store := live.NewStore()
+	report := protocol.AgentReport{Disks: []protocol.DiskStats{{Mountpoint: "/original"}}}
+	store.Upsert(servers.Server{ID: 7, Name: "home-lab"}, report, time.Now())
+
+	report.Disks[0].Mountpoint = "/mutated"
+
+	stored, _ := store.Get(7)
+	if stored.Report.Disks[0].Mountpoint != "/original" {
+		t.Fatalf("stored mountpoint=%q", stored.Report.Disks[0].Mountpoint)
+	}
+}
+
+func TestStoreReturnsDetachedSnapshotDisks(t *testing.T) {
+	newStoredSnapshot := func() (*live.Store, servers.Server, time.Time) {
+		store := live.NewStore()
+		server := servers.Server{ID: 7, Name: "home-lab"}
+		receivedAt := time.Date(2026, 7, 26, 4, 0, 0, 0, time.UTC)
+		store.Upsert(server, protocol.AgentReport{Disks: []protocol.DiskStats{{Mountpoint: "/original"}}}, receivedAt)
+		return store, server, receivedAt
+	}
+
+	t.Run("upsert return", func(t *testing.T) {
+		store := live.NewStore()
+		returned := store.Upsert(servers.Server{ID: 7}, protocol.AgentReport{Disks: []protocol.DiskStats{{Mountpoint: "/original"}}}, time.Now())
+		returned.Report.Disks[0].Mountpoint = "/mutated"
+		stored, _ := store.Get(7)
+		if stored.Report.Disks[0].Mountpoint != "/original" {
+			t.Fatalf("stored mountpoint=%q", stored.Report.Disks[0].Mountpoint)
+		}
+	})
+
+	t.Run("get return", func(t *testing.T) {
+		store, _, _ := newStoredSnapshot()
+		returned, _ := store.Get(7)
+		returned.Report.Disks[0].Mountpoint = "/mutated"
+		again, _ := store.Get(7)
+		if again.Report.Disks[0].Mountpoint != "/original" {
+			t.Fatalf("stored mountpoint=%q", again.Report.Disks[0].Mountpoint)
+		}
+	})
+
+	t.Run("offline return", func(t *testing.T) {
+		store, _, receivedAt := newStoredSnapshot()
+		returned := store.MarkOffline(receivedAt.Add(time.Second))
+		returned[0].Report.Disks[0].Mountpoint = "/mutated"
+		again, _ := store.Get(7)
+		if again.Report.Disks[0].Mountpoint != "/original" {
+			t.Fatalf("stored mountpoint=%q", again.Report.Disks[0].Mountpoint)
+		}
+	})
+}
+
 func TestMarkOfflineAfterCutoff(t *testing.T) {
 	store := live.NewStore()
 	now := time.Date(2026, 7, 26, 4, 0, 0, 0, time.UTC)

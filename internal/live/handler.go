@@ -28,6 +28,7 @@ type Handler struct {
 	hub                *Hub
 	now                func() time.Time
 	newHeartbeatTicker func(time.Duration) Ticker
+	coordinator        *Coordinator
 }
 
 func NewHandler(serverService *servers.Service, store *Store, hub *Hub, options ...HandlerOption) *Handler {
@@ -39,9 +40,13 @@ func NewHandler(serverService *servers.Service, store *Store, hub *Hub, options 
 		newHeartbeatTicker: func(interval time.Duration) Ticker {
 			return realTicker{Ticker: time.NewTicker(interval)}
 		},
+		coordinator: NewCoordinator(serverService, store, hub),
 	}
 	for _, option := range options {
 		option(handler)
+	}
+	if serverService != nil {
+		serverService.SetRegistryObserver(handler.coordinator)
 	}
 	return handler
 }
@@ -54,13 +59,17 @@ func WithHeartbeatTicker(factory func(time.Duration) Ticker) HandlerOption {
 	return func(handler *Handler) { handler.newHeartbeatTicker = factory }
 }
 
+func WithCoordinator(coordinator *Coordinator) HandlerOption {
+	return func(handler *Handler) { handler.coordinator = coordinator }
+}
+
 func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 	token, ok := bearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		writeLiveError(w, http.StatusUnauthorized, servers.ErrInvalidToken)
 		return
 	}
-	server, err := h.servers.AuthenticateToken(r.Context(), token)
+	_, err := h.servers.AuthenticateToken(r.Context(), token)
 	if errors.Is(err, servers.ErrInvalidToken) {
 		writeLiveError(w, http.StatusUnauthorized, err)
 		return
@@ -89,12 +98,19 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 		writeLiveError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := h.servers.UpdateAgentVersion(r.Context(), server.ID, report.AgentVersion); err != nil {
+	_, err = h.coordinator.Accept(r.Context(), token, report, h.now().UTC(), sourceIP(r.RemoteAddr))
+	if errors.Is(err, servers.ErrInvalidToken) {
+		writeLiveError(w, http.StatusUnauthorized, err)
+		return
+	}
+	if errors.Is(err, servers.ErrDisabled) {
+		writeLiveError(w, http.StatusForbidden, err)
+		return
+	}
+	if err != nil {
 		writeLiveError(w, http.StatusInternalServerError, errors.New("internal server error"))
 		return
 	}
-	snapshot := h.store.UpsertFrom(server, report, h.now().UTC(), sourceIP(r.RemoteAddr))
-	h.hub.Publish(Event{Type: "snapshot.updated", Snapshot: snapshot})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -148,6 +164,8 @@ func (h *Handler) SSE(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	heartbeat := h.newHeartbeatTicker(15 * time.Second)
 	defer heartbeat.Stop()
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 	for {
 		select {
 		case <-r.Context().Done():

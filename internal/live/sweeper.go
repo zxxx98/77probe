@@ -18,17 +18,15 @@ type Ticker interface {
 type SweeperOption func(*Sweeper)
 
 type Sweeper struct {
-	store     *Store
-	hub       *Hub
-	now       func() time.Time
-	newTicker func(time.Duration) Ticker
+	coordinator *Coordinator
+	now         func() time.Time
+	newTicker   func(time.Duration) Ticker
 }
 
 func NewSweeper(store *Store, hub *Hub, options ...SweeperOption) *Sweeper {
 	sweeper := &Sweeper{
-		store: store,
-		hub:   hub,
-		now:   time.Now,
+		coordinator: newCoordinator(nil, store, hub),
+		now:         time.Now,
 		newTicker: func(interval time.Duration) Ticker {
 			return realTicker{Ticker: time.NewTicker(interval)}
 		},
@@ -47,6 +45,10 @@ func WithSweeperTicker(factory func(time.Duration) Ticker) SweeperOption {
 	return func(sweeper *Sweeper) { sweeper.newTicker = factory }
 }
 
+func WithSweeperCoordinator(coordinator *Coordinator) SweeperOption {
+	return func(sweeper *Sweeper) { sweeper.coordinator = coordinator }
+}
+
 func (s *Sweeper) Run(ctx context.Context) {
 	ticker := s.newTicker(sweepInterval)
 	defer ticker.Stop()
@@ -55,9 +57,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
-			for _, snapshot := range s.store.MarkOffline(s.now().Add(-offlineAfter)) {
-				s.hub.Publish(Event{Type: "snapshot.offline", Snapshot: snapshot})
-			}
+			s.coordinator.Sweep(s.now().Add(-offlineAfter))
 		}
 	}
 }

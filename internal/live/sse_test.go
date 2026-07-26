@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,42 @@ import (
 	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/servers"
 )
+
+type observingTicker struct {
+	ch     chan time.Time
+	called chan struct{}
+	once   sync.Once
+}
+
+func (t *observingTicker) C() <-chan time.Time {
+	t.once.Do(func() { close(t.called) })
+	return t.ch
+}
+
+func (t *observingTicker) Stop() {}
+
+func TestSSEFlushesIdleResponseImmediately(t *testing.T) {
+	ticker := &observingTicker{ch: make(chan time.Time), called: make(chan struct{})}
+	handler := live.NewHandler(nil, live.NewStore(), live.NewHub(), live.WithHeartbeatTicker(func(time.Duration) live.Ticker { return ticker }))
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/live", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.SSE(rec, req)
+		close(done)
+	}()
+
+	<-ticker.called
+	if !rec.Flushed || rec.Code != http.StatusOK {
+		t.Fatalf("flushed=%v code=%d", rec.Flushed, rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "text/event-stream" || rec.Body.Len() != 0 {
+		t.Fatalf("headers=%v body=%q", rec.Header(), rec.Body.String())
+	}
+	cancel()
+	<-done
+}
 
 func TestSSEStreamsFullEventWithExactHeaders(t *testing.T) {
 	router, cookie, hub, _, started := newSSERouter(t)
