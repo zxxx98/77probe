@@ -23,19 +23,22 @@ type runtime struct {
 	sweeper *live.Sweeper
 }
 
-func newRuntime(conn *sql.DB) *runtime {
+func newRuntime(conn *sql.DB) (*runtime, error) {
 	authService := auth.NewService(conn)
 	serverService := servers.NewService(conn)
 	store := live.NewStore()
 	hub := live.NewHub()
 	coordinator := live.NewCoordinator(serverService, store, hub)
-	liveHandler := live.NewHandler(serverService, store, hub, live.WithCoordinator(coordinator))
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		return nil, err
+	}
+	liveHandler := live.NewHandler(coordinator)
 	return &runtime{
 		handler: httpapi.NewRouter(httpapi.Dependencies{Auth: authService, Servers: serverService, Live: liveHandler}),
 		servers: serverService,
 		store:   store,
-		sweeper: live.NewSweeper(store, hub, live.WithSweeperCoordinator(coordinator)),
-	}
+		sweeper: live.NewSweeper(coordinator),
+	}, nil
 }
 
 func (r *runtime) startSweeper(ctx context.Context) <-chan struct{} {
@@ -61,7 +64,10 @@ func Run(ctx context.Context, addr string) error {
 		return err
 	}
 
-	runtime := newRuntime(conn)
+	runtime, err := newRuntime(conn)
+	if err != nil {
+		return err
+	}
 	liveCtx, cancelLive := context.WithCancel(ctx)
 	liveDone := runtime.startSweeper(liveCtx)
 	defer func() {

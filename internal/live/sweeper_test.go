@@ -28,7 +28,7 @@ func TestSweeperPublishesOneOfflineTransition(t *testing.T) {
 	defer cancelSubscription()
 	ticker := &fakeTicker{ch: make(chan time.Time, 2)}
 	var interval time.Duration
-	sweeper := live.NewSweeper(store, hub,
+	sweeper := live.NewSweeper(coordinatorForTest(t, store, hub),
 		live.WithSweeperClock(func() time.Time { return now }),
 		live.WithSweeperTicker(func(got time.Duration) live.Ticker {
 			interval = got
@@ -73,7 +73,9 @@ func TestSweeperPublishesOneOfflineTransition(t *testing.T) {
 
 func TestSweeperStopsPromptlyWithoutTick(t *testing.T) {
 	ticker := &fakeTicker{ch: make(chan time.Time)}
-	sweeper := live.NewSweeper(live.NewStore(), live.NewHub(), live.WithSweeperTicker(func(time.Duration) live.Ticker { return ticker }))
+	store := live.NewStore()
+	hub := live.NewHub()
+	sweeper := live.NewSweeper(coordinatorForTest(t, store, hub), live.WithSweeperTicker(func(time.Duration) live.Ticker { return ticker }))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

@@ -7,18 +7,21 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
 
 const maxServers = 10
 
 var (
-	ErrInvalidInput = errors.New("invalid server input")
-	ErrNotFound     = errors.New("server not found")
-	ErrInvalidToken = errors.New("invalid agent token")
-	ErrDisabled     = errors.New("server is disabled")
-	ErrServerLimit  = errors.New("server limit reached")
+	ErrInvalidInput             = errors.New("invalid server input")
+	ErrNotFound                 = errors.New("server not found")
+	ErrInvalidToken             = errors.New("invalid agent token")
+	ErrDisabled                 = errors.New("server is disabled")
+	ErrServerLimit              = errors.New("server limit reached")
+	ErrRegistryObserverAttached = errors.New("registry observer already attached")
 )
 
 type Server struct {
@@ -38,11 +41,24 @@ type RegistryObserver interface {
 type Service struct {
 	db               *sql.DB
 	now              func() time.Time
+	observerMu       sync.RWMutex
 	registryObserver RegistryObserver
 }
 
-func (s *Service) SetRegistryObserver(observer RegistryObserver) {
-	s.registryObserver = observer
+func (s *Service) AttachRegistryObserver(observer RegistryObserver) error {
+	if observer == nil || !reflect.TypeOf(observer).Comparable() {
+		return ErrInvalidInput
+	}
+	s.observerMu.Lock()
+	defer s.observerMu.Unlock()
+	if s.registryObserver == nil {
+		s.registryObserver = observer
+		return nil
+	}
+	if s.registryObserver == observer {
+		return nil
+	}
+	return ErrRegistryObserverAttached
 }
 
 func NewService(conn *sql.DB) *Service {
@@ -138,8 +154,8 @@ func (s *Service) Update(ctx context.Context, id int64, name *string, enabled *b
 		}
 		return server, err
 	}
-	if s.registryObserver != nil {
-		return s.registryObserver.ReconcileUpdate(update)
+	if observer := s.registryObserverForMutation(); observer != nil {
+		return observer.ReconcileUpdate(update)
 	}
 	return update()
 }
@@ -159,10 +175,17 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 		}
 		return nil
 	}
-	if s.registryObserver != nil {
-		return s.registryObserver.ReconcileDelete(id, remove)
+	if observer := s.registryObserverForMutation(); observer != nil {
+		return observer.ReconcileDelete(id, remove)
 	}
 	return remove()
+}
+
+func (s *Service) registryObserverForMutation() RegistryObserver {
+	s.observerMu.RLock()
+	observer := s.registryObserver
+	s.observerMu.RUnlock()
+	return observer
 }
 
 func (s *Service) RotateToken(ctx context.Context, id int64) (string, error) {

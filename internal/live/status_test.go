@@ -106,7 +106,12 @@ func newAuthenticatedLiveRouter(t *testing.T) (http.Handler, *http.Cookie, *serv
 	}
 	serverService := servers.NewService(conn)
 	store := live.NewStore()
-	handler := live.NewHandler(serverService, store, live.NewHub())
+	hub := live.NewHub()
+	coordinator := live.NewCoordinator(serverService, store, hub)
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		t.Fatal(err)
+	}
+	handler := live.NewHandler(coordinator)
 	router := httpapi.NewRouter(httpapi.Dependencies{Auth: authService, Servers: serverService, Live: handler})
 	return router, &http.Cookie{Name: "tinyprobe_session", Value: session}, serverService, store
 }

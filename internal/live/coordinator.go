@@ -19,15 +19,23 @@ type eventPublisher interface {
 }
 
 type Coordinator struct {
-	mu           sync.Mutex
-	registry     serverRegistry
-	store        *Store
-	publisher    eventPublisher
-	beforeAccept func(string)
+	mu            sync.Mutex
+	serverService *servers.Service
+	registry      serverRegistry
+	store         *Store
+	hub           *Hub
+	publisher     eventPublisher
+	beforeAccept  func(string)
 }
 
 func NewCoordinator(registry *servers.Service, store *Store, hub *Hub) *Coordinator {
-	return newCoordinator(registry, store, hub)
+	if registry == nil || store == nil || hub == nil {
+		panic("live coordinator requires server service, store, and hub")
+	}
+	coordinator := newCoordinator(registry, store, hub)
+	coordinator.serverService = registry
+	coordinator.hub = hub
+	return coordinator
 }
 
 func newCoordinator(registry serverRegistry, store *Store, publisher eventPublisher) *Coordinator {

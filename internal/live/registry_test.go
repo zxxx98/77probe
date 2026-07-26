@@ -21,7 +21,9 @@ func TestRenameReconcilesStoredSnapshotBeforeOfflineEvent(t *testing.T) {
 	store := live.NewStore()
 	hub := live.NewHub()
 	coordinator := live.NewCoordinator(serverService, store, hub)
-	serverService.SetRegistryObserver(coordinator)
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		t.Fatal(err)
+	}
 	server, _, err := serverService.Create(context.Background(), "old-name")
 	if err != nil {
 		t.Fatal(err)
@@ -52,8 +54,10 @@ func TestDeleteRemovesSnapshotBeforeSweepAndStatusRead(t *testing.T) {
 	store := live.NewStore()
 	hub := live.NewHub()
 	coordinator := live.NewCoordinator(serverService, store, hub)
-	serverService.SetRegistryObserver(coordinator)
-	handler := live.NewHandler(serverService, store, hub, live.WithCoordinator(coordinator))
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		t.Fatal(err)
+	}
+	handler := live.NewHandler(coordinator)
 	server, _, err := serverService.Create(context.Background(), "home-lab")
 	if err != nil {
 		t.Fatal(err)
@@ -110,8 +114,10 @@ func TestDeleteWinningDuringInFlightIngestCannotRecreateSnapshot(t *testing.T) {
 	store := live.NewStore()
 	hub := live.NewHub()
 	coordinator := live.NewCoordinator(serverService, store, hub)
-	serverService.SetRegistryObserver(coordinator)
-	handler := live.NewHandler(serverService, store, hub, live.WithCoordinator(coordinator))
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		t.Fatal(err)
+	}
+	handler := live.NewHandler(coordinator)
 	server, token, err := serverService.Create(context.Background(), "home-lab")
 	if err != nil {
 		t.Fatal(err)

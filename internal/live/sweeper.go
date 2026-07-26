@@ -23,9 +23,12 @@ type Sweeper struct {
 	newTicker   func(time.Duration) Ticker
 }
 
-func NewSweeper(store *Store, hub *Hub, options ...SweeperOption) *Sweeper {
+func NewSweeper(coordinator *Coordinator, options ...SweeperOption) *Sweeper {
+	if coordinator == nil {
+		panic("live sweeper requires a coordinator")
+	}
 	sweeper := &Sweeper{
-		coordinator: newCoordinator(nil, store, hub),
+		coordinator: coordinator,
 		now:         time.Now,
 		newTicker: func(interval time.Duration) Ticker {
 			return realTicker{Ticker: time.NewTicker(interval)}
@@ -43,10 +46,6 @@ func WithSweeperClock(now func() time.Time) SweeperOption {
 
 func WithSweeperTicker(factory func(time.Duration) Ticker) SweeperOption {
 	return func(sweeper *Sweeper) { sweeper.newTicker = factory }
-}
-
-func WithSweeperCoordinator(coordinator *Coordinator) SweeperOption {
-	return func(sweeper *Sweeper) { sweeper.coordinator = coordinator }
 }
 
 func (s *Sweeper) Run(ctx context.Context) {

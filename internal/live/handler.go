@@ -31,22 +31,22 @@ type Handler struct {
 	coordinator        *Coordinator
 }
 
-func NewHandler(serverService *servers.Service, store *Store, hub *Hub, options ...HandlerOption) *Handler {
+func NewHandler(coordinator *Coordinator, options ...HandlerOption) *Handler {
+	if coordinator == nil || coordinator.serverService == nil || coordinator.store == nil || coordinator.hub == nil {
+		panic("live handler requires a coordinator")
+	}
 	handler := &Handler{
-		servers: serverService,
-		store:   store,
-		hub:     hub,
+		servers: coordinator.serverService,
+		store:   coordinator.store,
+		hub:     coordinator.hub,
 		now:     time.Now,
 		newHeartbeatTicker: func(interval time.Duration) Ticker {
 			return realTicker{Ticker: time.NewTicker(interval)}
 		},
-		coordinator: NewCoordinator(serverService, store, hub),
+		coordinator: coordinator,
 	}
 	for _, option := range options {
 		option(handler)
-	}
-	if serverService != nil {
-		serverService.SetRegistryObserver(handler.coordinator)
 	}
 	return handler
 }
@@ -57,10 +57,6 @@ func WithHandlerClock(now func() time.Time) HandlerOption {
 
 func WithHeartbeatTicker(factory func(time.Duration) Ticker) HandlerOption {
 	return func(handler *Handler) { handler.newHeartbeatTicker = factory }
-}
-
-func WithCoordinator(coordinator *Coordinator) HandlerOption {
-	return func(handler *Handler) { handler.coordinator = coordinator }
 }
 
 func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {

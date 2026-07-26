@@ -164,7 +164,11 @@ func newLiveRouter(t *testing.T) (http.Handler, *servers.Service, *live.Store, *
 	}
 	store := live.NewStore()
 	hub := live.NewHub()
-	liveHandler := live.NewHandler(serverService, store, hub)
+	coordinator := live.NewCoordinator(serverService, store, hub)
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		t.Fatal(err)
+	}
+	liveHandler := live.NewHandler(coordinator)
 	return httpapi.NewRouter(httpapi.Dependencies{Servers: serverService, Live: liveHandler}), serverService, store, hub, server, token
 }
 

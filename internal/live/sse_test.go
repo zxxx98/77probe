@@ -32,7 +32,9 @@ func (t *observingTicker) Stop() {}
 
 func TestSSEFlushesIdleResponseImmediately(t *testing.T) {
 	ticker := &observingTicker{ch: make(chan time.Time), called: make(chan struct{})}
-	handler := live.NewHandler(nil, live.NewStore(), live.NewHub(), live.WithHeartbeatTicker(func(time.Duration) live.Ticker { return ticker }))
+	store := live.NewStore()
+	hub := live.NewHub()
+	handler := live.NewHandler(coordinatorForTest(t, store, hub), live.WithHeartbeatTicker(func(time.Duration) live.Ticker { return ticker }))
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/live", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -134,7 +136,7 @@ func TestSSEExitsPromptlyOnRequestCancellation(t *testing.T) {
 	hub := live.NewHub()
 	ticker := &fakeTicker{ch: make(chan time.Time)}
 	started := make(chan time.Duration, 1)
-	handler := live.NewHandler(nil, live.NewStore(), hub, live.WithHeartbeatTicker(func(interval time.Duration) live.Ticker {
+	handler := live.NewHandler(coordinatorForTest(t, live.NewStore(), hub), live.WithHeartbeatTicker(func(interval time.Duration) live.Ticker {
 		started <- interval
 		return ticker
 	}))
@@ -171,10 +173,15 @@ func newSSERouter(t *testing.T) (http.Handler, *http.Cookie, *live.Hub, *fakeTic
 		t.Fatal(err)
 	}
 	serverService := servers.NewService(conn)
+	store := live.NewStore()
 	hub := live.NewHub()
+	coordinator := live.NewCoordinator(serverService, store, hub)
+	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
+		t.Fatal(err)
+	}
 	ticker := &fakeTicker{ch: make(chan time.Time, 1)}
 	started := make(chan time.Duration, 1)
-	handler := live.NewHandler(serverService, live.NewStore(), hub, live.WithHeartbeatTicker(func(interval time.Duration) live.Ticker {
+	handler := live.NewHandler(coordinator, live.WithHeartbeatTicker(func(interval time.Duration) live.Ticker {
 		started <- interval
 		return ticker
 	}))

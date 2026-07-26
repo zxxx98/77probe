@@ -139,6 +139,48 @@ func TestUpdateAgentVersionPersistsReportedVersion(t *testing.T) {
 	}
 }
 
+type registryObserverStub struct {
+	updates int
+	deletes int
+}
+
+func (o *registryObserverStub) ReconcileUpdate(mutate func() (servers.Server, error)) (servers.Server, error) {
+	o.updates++
+	return mutate()
+}
+
+func (o *registryObserverStub) ReconcileDelete(_ int64, mutate func() error) error {
+	o.deletes++
+	return mutate()
+}
+
+func TestAttachRegistryObserverIsOneTimeAndIdempotent(t *testing.T) {
+	svc, _ := newServerService(t)
+	first := &registryObserverStub{}
+	second := &registryObserverStub{}
+
+	if err := svc.AttachRegistryObserver(first); err != nil {
+		t.Fatalf("first attach: %v", err)
+	}
+	if err := svc.AttachRegistryObserver(first); err != nil {
+		t.Fatalf("same observer attach: %v", err)
+	}
+	if err := svc.AttachRegistryObserver(second); !errors.Is(err, servers.ErrRegistryObserverAttached) {
+		t.Fatalf("replacement error=%v", err)
+	}
+	server, _, err := svc.Create(context.Background(), "home-lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "renamed"
+	if _, err := svc.Update(context.Background(), server.ID, &name, nil); err != nil {
+		t.Fatal(err)
+	}
+	if first.updates != 1 || second.updates != 0 {
+		t.Fatalf("first updates=%d second updates=%d", first.updates, second.updates)
+	}
+}
+
 func TestUpdateChangesOnlyRequestedFieldAndRejectsDeleteDuringUpdate(t *testing.T) {
 	svc, conn := newServerService(t)
 	ctx := context.Background()

@@ -23,7 +23,10 @@ func TestRuntimeWiresLiveIngestionAndStopsSweeper(t *testing.T) {
 	if err := monitorDB.ApplyMigrations(context.Background(), conn); err != nil {
 		t.Fatal(err)
 	}
-	runtime := newRuntime(conn)
+	runtime, err := newRuntime(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	server, token, err := runtime.servers.Create(context.Background(), "home-lab")
 	if err != nil {
 		t.Fatal(err)
