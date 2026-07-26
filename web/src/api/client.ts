@@ -1,3 +1,5 @@
+import type { ServerSnapshot } from "./types";
+
 export interface Admin {
   id: number;
   username: string;
@@ -80,6 +82,10 @@ export const api = {
     postJSON<LoginResult>("/api/login", credentials),
   logout: () => request<void>("/api/logout", { method: "POST" }),
   getMe: () => request<Admin>("/api/me"),
+  getServerStatuses: (signal?: AbortSignal) =>
+    request<ServerSnapshot[]>("/api/servers/status", { signal }),
+  getServerStatus: (serverId: number, signal?: AbortSignal) =>
+    request<ServerSnapshot>(`/api/servers/${serverId}/status`, { signal }),
 };
 
 export function apiErrorMessage(error: unknown, fallback: string): string {

@@ -1,32 +1,40 @@
-import { AuthGate } from "../auth/AuthGate";
+import { useEffect, useState } from "react";
 
-function ApplicationShell() {
+import { AuthGate } from "../auth/AuthGate";
+import { AppNav } from "../components/AppNav";
+import { OverviewPage } from "../pages/OverviewPage";
+import { ServerDetailPage } from "../pages/ServerDetailPage";
+
+const detailPath = /^\/servers\/(\d+)\/?$/;
+
+export function DashboardRouter() {
+  const [pathname, setPathname] = useState(window.location.pathname);
+
+  useEffect(() => {
+    const handlePopState = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const navigate = (path: string) => {
+    if (path !== window.location.pathname) {
+      window.history.pushState(null, "", path);
+    }
+    setPathname(path);
+  };
+
+  const detailMatch = pathname.match(detailPath);
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
-      <header className="app-header">
-        <a className="brand" href="/" aria-label="TinyProbe 首页">
-          <span className="brand-mark" aria-hidden="true">
-            T
-          </span>
-          <span translate="no">TinyProbe</span>
-        </a>
-        <nav aria-label="主导航">
-          <a className="nav-link nav-link-current" href="/">
-            概览
-          </a>
-        </nav>
-      </header>
-      <main className="app-content" id="main-content">
-        <p className="calm-status">
-          <span className="status-dot" aria-hidden="true" />
-          已安全登录
-        </p>
-        <h1>服务器们都很安稳</h1>
-        <p>监控概览会在下一阶段出现在这里。</p>
-      </main>
+      <AppNav pathname={detailMatch ? pathname : "/"} onNavigate={navigate} />
+      {detailMatch ? (
+        <ServerDetailPage serverId={Number(detailMatch[1])} onNavigate={navigate} />
+      ) : (
+        <OverviewPage onNavigate={navigate} />
+      )}
     </div>
   );
 }
@@ -34,7 +42,7 @@ function ApplicationShell() {
 export function App() {
   return (
     <AuthGate>
-      <ApplicationShell />
+      <DashboardRouter />
     </AuthGate>
   );
 }
