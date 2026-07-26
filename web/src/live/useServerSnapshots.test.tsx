@@ -162,6 +162,21 @@ describe("useServerSnapshots", () => {
     ]);
   });
 
+  it("reports the EventSource connection while the initial fetch is still pending", () => {
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+
+    const { result } = renderHook(() => useServerSnapshots());
+
+    act(() => FakeEventSource.instances[0].open());
+
+    expect(result.current.connected).toBe(true);
+    expect(result.current.snapshots).toEqual([]);
+
+    act(() => FakeEventSource.instances[0].fail());
+
+    expect(result.current.connected).toBe(false);
+  });
+
   it("merges an SSE snapshot by server id", async () => {
     fetchMock.mockResolvedValueOnce(Response.json([snapshot({ cpuUsage: 12 })]));
     const { result } = renderHook(() => useServerSnapshots());

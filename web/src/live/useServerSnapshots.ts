@@ -83,10 +83,17 @@ export interface ServerSnapshotsState {
   refresh: () => Promise<void>;
 }
 
-export function useServerSnapshots(): ServerSnapshotsState {
+type InitialLoadStatus = "pending" | "success" | "error";
+
+interface OverviewServerSnapshotsState extends ServerSnapshotsState {
+  initialLoadStatus: InitialLoadStatus;
+}
+
+function useServerSnapshotsState(): OverviewServerSnapshotsState {
   const [snapshots, setSnapshots] = useState<ServerSnapshot[]>([]);
   const [liveConnected, setLiveConnected] = useState(false);
-  const [settled, setSettled] = useState(false);
+  const [initialLoadStatus, setInitialLoadStatus] =
+    useState<InitialLoadStatus>("pending");
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const openedRef = useRef(false);
@@ -110,6 +117,7 @@ export function useServerSnapshots(): ServerSnapshotsState {
       ) {
         return;
       }
+      setInitialLoadStatus("success");
       setSnapshots((current) =>
         reconcileFetch(
           current,
@@ -127,15 +135,12 @@ export function useServerSnapshots(): ServerSnapshotsState {
       ) {
         return;
       }
+      setInitialLoadStatus((current) =>
+        current === "success" ? current : "error",
+      );
       setError(apiErrorMessage(loadError, LOAD_ERROR));
     } finally {
       controllersRef.current.delete(controller);
-      if (
-        mountedRef.current &&
-        requestGeneration === requestGenerationRef.current
-      ) {
-        setSettled(true);
-      }
     }
   }
 
@@ -189,8 +194,23 @@ export function useServerSnapshots(): ServerSnapshotsState {
 
   return {
     snapshots,
-    connected: settled && liveConnected,
+    connected: liveConnected,
     error,
     refresh,
+    initialLoadStatus,
   };
+}
+
+export function useServerSnapshots(): ServerSnapshotsState {
+  const state = useServerSnapshotsState();
+  return {
+    snapshots: state.snapshots,
+    connected: state.connected,
+    error: state.error,
+    refresh: state.refresh,
+  };
+}
+
+export function useOverviewServerSnapshots(): OverviewServerSnapshotsState {
+  return useServerSnapshotsState();
 }

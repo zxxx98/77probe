@@ -66,12 +66,12 @@ function snapshot(
 }
 
 class FakeEventSource {
-  static instance: FakeEventSource | undefined;
+  static instances: FakeEventSource[] = [];
   onopen: ((event: Event) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
 
   constructor() {
-    FakeEventSource.instance = this;
+    FakeEventSource.instances.push(this);
   }
 
   addEventListener() {}
@@ -88,7 +88,7 @@ class FakeEventSource {
 
 describe("OverviewPage", () => {
   beforeEach(() => {
-    FakeEventSource.instance = undefined;
+    FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
   });
 
@@ -112,7 +112,7 @@ describe("OverviewPage", () => {
 
     render(<OverviewPage onNavigate={vi.fn()} />);
 
-    act(() => FakeEventSource.instance?.open());
+    act(() => FakeEventSource.instances[0]?.open());
 
     expect(await screen.findByText("还没有服务器来报到")).toBeInTheDocument();
     expect(screen.getByText(/添加服务器后/)).toBeInTheDocument();
@@ -142,6 +142,8 @@ describe("OverviewPage", () => {
 
     render(<OverviewPage onNavigate={vi.fn()} />);
 
+    act(() => FakeEventSource.instances[0]?.open());
+
     expect(
       screen.getByRole("heading", { name: "正在确认服务器状态" }),
     ).toBeInTheDocument();
@@ -152,12 +154,36 @@ describe("OverviewPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("uses one initial fetch and one EventSource for the overview state", () => {
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+
+    render(<OverviewPage onNavigate={vi.fn()} />);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it("keeps a successful empty state visible when the live connection drops", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+
+    render(<OverviewPage onNavigate={vi.fn()} />);
+    act(() => FakeEventSource.instances[0]?.open());
+
+    expect(await screen.findByText("还没有服务器来报到")).toBeInTheDocument();
+
+    act(() => FakeEventSource.instances[0]?.fail());
+
+    expect(screen.getByText("还没有服务器来报到")).toBeInTheDocument();
+    expect(screen.getByText("实时连接已断开")).toBeInTheDocument();
+    expect(screen.queryByText("这次没有取到状态")).not.toBeInTheDocument();
+  });
+
   it("keeps stale current data visible when the live connection drops", async () => {
     fetchMock.mockResolvedValueOnce(Response.json([snapshot()]));
     render(<OverviewPage onNavigate={vi.fn()} />);
     expect(await screen.findByText("home-lab")).toBeInTheDocument();
 
-    act(() => FakeEventSource.instance?.fail());
+    act(() => FakeEventSource.instances[0]?.fail());
 
     expect(screen.getByRole("status")).toHaveTextContent("实时连接已断开");
     expect(screen.getByText("home-lab")).toBeInTheDocument();

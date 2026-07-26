@@ -2,7 +2,7 @@ import type { MouseEvent } from "react";
 
 import { ServerRow } from "../components/ServerRow";
 import { SummaryPanel } from "../components/SummaryPanel";
-import { useServerSnapshots } from "../live/useServerSnapshots";
+import { useOverviewServerSnapshots } from "../live/useServerSnapshots";
 
 interface OverviewPageProps {
   onNavigate: (path: string) => void;
@@ -20,10 +20,15 @@ function statusCopy(total: number, online: number): string {
 }
 
 export function OverviewPage({ onNavigate }: OverviewPageProps) {
-  const { snapshots, connected, error, refresh } = useServerSnapshots();
+  const { snapshots, connected, error, refresh, initialLoadStatus } =
+    useOverviewServerSnapshots();
   const online = snapshots.filter((snapshot) => snapshot.online).length;
-  const initialLoading = snapshots.length === 0 && !connected && !error;
-  const initialError = Boolean(error && snapshots.length === 0);
+  const initialLoading =
+    snapshots.length === 0 && initialLoadStatus === "pending";
+  const initialError =
+    snapshots.length === 0 && initialLoadStatus === "error";
+  const initialEmpty =
+    snapshots.length === 0 && initialLoadStatus === "success";
   const disconnected = Boolean(error?.startsWith("实时连接已断开"));
   const introHeading = initialLoading
     ? "正在确认服务器状态"
@@ -85,13 +90,25 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
         </section>
       ) : null}
 
-      {connected && !initialError && snapshots.length === 0 ? (
+      {initialEmpty ? (
         <section className="dashboard-state dashboard-empty">
           <div>
             <h2>还没有服务器来报到</h2>
             <p>添加服务器后，它的在线状态和关键指标会出现在这里。</p>
           </div>
         </section>
+      ) : null}
+
+      {initialEmpty && disconnected ? (
+        <div className="connection-notice" role="status">
+          <div>
+            <strong>实时连接已断开</strong>
+            <p>页面会自动重连；服务器列表仍显示最近一次获取到的结果。</p>
+          </div>
+          <button className="button button-secondary" type="button" onClick={retry}>
+            立即刷新
+          </button>
+        </div>
       ) : null}
 
       {snapshots.length > 0 ? (
