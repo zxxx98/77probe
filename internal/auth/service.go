@@ -24,12 +24,13 @@ var (
 )
 
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db             *sql.DB
+	now            func() time.Time
+	verifyPassword func(password, encoded string) (bool, error)
 }
 
 func NewService(conn *sql.DB) *Service {
-	return &Service{db: conn, now: time.Now}
+	return &Service{db: conn, now: time.Now, verifyPassword: verifyPassword}
 }
 
 func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
@@ -67,15 +68,18 @@ func (s *Service) CreateAdmin(ctx context.Context, username, password string) er
 func (s *Service) Login(ctx context.Context, username, password string) (string, time.Time, error) {
 	var id int64
 	var encoded string
+	unknownUser := false
 	if err := s.db.QueryRowContext(ctx, `SELECT id, password_hash FROM admins WHERE username=?`, username).Scan(&id, &encoded); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", time.Time{}, ErrInvalidLogin
+			encoded = dummyPasswordHash
+			unknownUser = true
+		} else {
+			return "", time.Time{}, err
 		}
-		return "", time.Time{}, err
 	}
 
-	ok, err := verifyPassword(password, encoded)
-	if err != nil || !ok {
+	ok, err := s.verifyPassword(password, encoded)
+	if err != nil || !ok || unknownUser {
 		return "", time.Time{}, ErrInvalidLogin
 	}
 
