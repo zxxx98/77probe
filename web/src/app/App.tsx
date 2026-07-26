@@ -43,6 +43,7 @@ export function DashboardRouter() {
   const [oneTimeToken, setOneTimeToken] = useState<OneTimeToken | null>(null);
   const [tokenRequestPending, setTokenRequestPending] = useState(false);
   const [tokenRequestServerId, setTokenRequestServerId] = useState<number | null>(null);
+  const [tokenRequestError, setTokenRequestError] = useState("");
   const [managementGeneration, setManagementGeneration] = useState(0);
   const tokenRef = useRef<OneTimeToken | null>(null);
   const tokenLockRef = useRef(false);
@@ -77,14 +78,16 @@ export function DashboardRouter() {
       return false;
     }
     tokenLockRef.current = true;
+    setTokenRequestError("");
     setTokenRequestPending(true);
     setTokenRequestServerId(serverId);
     return true;
   };
 
-  const failTokenRequest = () => {
+  const failTokenRequest = (message: string) => {
     setTokenRequestPending(false);
     setTokenRequestServerId(null);
+    setTokenRequestError(message);
     tokenLockRef.current = tokenRef.current !== null;
   };
 
@@ -94,6 +97,7 @@ export function DashboardRouter() {
     setOneTimeToken(token);
     setTokenRequestPending(false);
     setTokenRequestServerId(null);
+    setTokenRequestError("");
     setManagementGeneration((current) => current + 1);
     navigate("/servers");
   };
@@ -151,6 +155,21 @@ export function DashboardRouter() {
             onClick={() => navigate("/servers")}
           >
             返回保存 Token
+          </button>
+        </aside>
+      ) : null}
+      {!managementPath && tokenRequestError ? (
+        <aside className="token-reminder token-reminder--error" role="alert">
+          <span>{tokenRequestError}</span>
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={() => {
+              setTokenRequestError("");
+              navigate("/servers");
+            }}
+          >
+            返回服务器管理
           </button>
         </aside>
       ) : null}

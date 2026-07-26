@@ -288,6 +288,45 @@ describe("DashboardRouter", () => {
     expect(beforeUnload().defaultPrevented).toBe(false);
   });
 
+  it("reports a deferred token request failure after navigation", async () => {
+    window.history.replaceState(null, "", "/servers");
+    let rejectCreate!: (reason?: unknown) => void;
+    const createResponse = new Promise<Response>((_resolve, reject) => {
+      rejectCreate = reject;
+    });
+    fetchMock.mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/servers" && init?.method === "POST") {
+        return createResponse;
+      }
+      if (path === "/api/servers") {
+        return Promise.resolve(Response.json([]));
+      }
+      if (path === "/api/servers/status") {
+        return Promise.resolve(Response.json([]));
+      }
+      return Promise.reject(new Error(`unexpected request: ${path}`));
+    });
+    render(<DashboardRouter />);
+    await screen.findByText("还没有添加服务器");
+
+    fireEvent.click(screen.getByRole("button", { name: "添加服务器" }));
+    fireEvent.change(screen.getByLabelText("服务器名称"), {
+      target: { value: "home-lab" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    fireEvent.click(screen.getByRole("link", { name: "概览" }));
+
+    await act(async () => {
+      rejectCreate(new Error("network unavailable"));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "暂时无法创建服务器，请稍后重试。",
+    );
+    expect(beforeUnload().defaultPrevented).toBe(false);
+  });
+
   it("publishes a deferred rotated token after the management page unmounts", async () => {
     window.history.replaceState(null, "", "/servers");
     const rotateResponse = deferredResponse();

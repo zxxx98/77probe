@@ -573,3 +573,55 @@ No whitespace errors; exit code 0
 ```
 
 Independent review found the list-during-mutation, route-remount rotation lock, streaming-test, live-region, and deferred-create remount gaps during successive passes. Each was reproduced or strengthened with focused coverage and corrected. No Task 10 binaries or behavior were added.
+
+---
+
+## Controller single-thread final supplement
+
+After switching to single-thread execution, controller review found one additional lifecycle edge: if a create/rotation request failed after the management page had unmounted, the page-local error disappeared silently.
+
+RED:
+
+```text
+pnpm --dir web test -- --run src/app/App.test.tsx
+DashboardRouter > reports a deferred token request failure after navigation
+Unable to find role="alert"
+Tests 1 failed | 9 passed
+```
+
+GREEN:
+
+```text
+pnpm --dir web test -- --run src/app/App.test.tsx
+Tests 10 passed
+```
+
+The authenticated app shell now retains a non-secret Token request error message, clears it on the next request or success, and shows an accessible return-to-management alert when the originating page is no longer mounted. Raw Token handling remains memory-only and unchanged.
+
+Fresh controller verification after the fix:
+
+```text
+pnpm --dir web test -- --run
+Test Files 13 passed (13)
+Tests 87 passed (87)
+
+pnpm --dir web lint
+Exit code 0
+
+pnpm --dir web build
+48 modules transformed
+internal/webui/dist/assets/index-Dw49kIwz.css
+internal/webui/dist/assets/index-Y4y8Xps0.js
+Exit code 0
+
+C:\Program Files\Go\bin\go.exe test ./...
+All packages passed; exit code 0
+
+C:\Program Files\Go\bin\go.exe vet ./...
+No findings; exit code 0
+
+git diff --check
+No whitespace errors; exit code 0
+```
+
+Controller browser acceptance used a disposable database and exercised create, one-time Token display/acknowledgement, amd64/arm64 switching, clipboard success feedback, inline rename, disable/enable, rotation confirmation, deletion confirmation, and deletion. At a 390px viewport, document width stayed within the viewport, all visible buttons/links met 44px targets, and long command blocks scrolled locally. The public download route returned safe `404` while Task 10 files were absent, and unsupported `POST` returned `405` with `Allow: GET, HEAD`.

@@ -559,6 +559,11 @@
   margin-top: 0;
 }
 
+.token-reminder--error {
+  background: var(--color-surface-strong);
+  color: var(--color-danger-text);
+}
+
 .management-heading,
 .install-panel-heading {
   display: flex;

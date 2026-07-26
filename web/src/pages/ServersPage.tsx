@@ -21,7 +21,7 @@ interface ServersPageProps {
   tokenRequestPending: boolean;
   tokenRequestServerId: number | null;
   onTokenRequestStarted: (serverId: number | null) => boolean;
-  onTokenRequestFailed: () => void;
+  onTokenRequestFailed: (message: string) => void;
   onTokenPublished: (token: OneTimeToken) => void;
   onTokenCleared: () => void;
   onTokenServerDeleted: (serverId: number) => void;
@@ -104,10 +104,12 @@ export function ServersPage({
       });
       setShowCreate(false);
     } catch (error) {
-      onTokenRequestFailed();
-      setOperationError(
-        apiErrorMessage(error, "暂时无法创建服务器，请稍后重试。"),
+      const message = apiErrorMessage(
+        error,
+        "暂时无法创建服务器，请稍后重试。",
       );
+      onTokenRequestFailed(message);
+      setOperationError(message);
     } finally {
       setCreating(false);
     }
@@ -208,13 +210,15 @@ export function ServersPage({
         });
         setConfirmation(null);
       } else {
-        onTokenRequestFailed();
+        onTokenRequestFailed("Token 请求已被更新的操作替代，请重试。");
       }
     } catch (error) {
-      onTokenRequestFailed();
-      setOperationError(
-        apiErrorMessage(error, "暂时无法重新生成 Token，请稍后重试。"),
+      const message = apiErrorMessage(
+        error,
+        "暂时无法重新生成 Token，请稍后重试。",
       );
+      onTokenRequestFailed(message);
+      setOperationError(message);
     }
   };
 
