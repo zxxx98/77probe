@@ -10,6 +10,7 @@ import (
 	"probe.local/monitor/internal/auth"
 	monitorDB "probe.local/monitor/internal/db"
 	"probe.local/monitor/internal/httpapi"
+	"probe.local/monitor/internal/servers"
 )
 
 func Run(ctx context.Context, addr string) error {
@@ -27,7 +28,8 @@ func Run(ctx context.Context, addr string) error {
 	}
 
 	authService := auth.NewService(conn)
-	srv := &http.Server{Addr: addr, Handler: httpapi.NewRouter(httpapi.Dependencies{Auth: authService})}
+	serverService := servers.NewService(conn)
+	srv := &http.Server{Addr: addr, Handler: httpapi.NewRouter(httpapi.Dependencies{Auth: authService, Servers: serverService})}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 
