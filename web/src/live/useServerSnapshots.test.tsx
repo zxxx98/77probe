@@ -149,6 +149,19 @@ describe("useServerSnapshots", () => {
     expect(FakeEventSource.instances[0].url).toBe("/api/live");
   });
 
+  it("exposes exactly the documented public contract", () => {
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+
+    const { result } = renderHook(() => useServerSnapshots());
+
+    expect(Object.keys(result.current).sort()).toEqual([
+      "connected",
+      "error",
+      "refresh",
+      "snapshots",
+    ]);
+  });
+
   it("merges an SSE snapshot by server id", async () => {
     fetchMock.mockResolvedValueOnce(Response.json([snapshot({ cpuUsage: 12 })]));
     const { result } = renderHook(() => useServerSnapshots());
@@ -184,6 +197,67 @@ describe("useServerSnapshots", () => {
     });
 
     expect(result.current.snapshots[0].report.cpu.usagePercent).toBe(42);
+  });
+
+  it("does not let an older refresh overwrite a newer refresh", async () => {
+    const olderResponse = deferredResponse();
+    const newerResponse = deferredResponse();
+    fetchMock
+      .mockResolvedValueOnce(Response.json([snapshot({ cpuUsage: 10 })]))
+      .mockImplementationOnce(() => olderResponse.promise)
+      .mockImplementationOnce(() => newerResponse.promise);
+    const { result } = renderHook(() => useServerSnapshots());
+    await waitFor(() => expect(result.current.snapshots).toHaveLength(1));
+
+    let olderRefresh!: Promise<void>;
+    let newerRefresh!: Promise<void>;
+    act(() => {
+      olderRefresh = result.current.refresh();
+      newerRefresh = result.current.refresh();
+    });
+
+    await act(async () => {
+      newerResponse.resolve(Response.json([snapshot({ cpuUsage: 30 })]));
+      await newerRefresh;
+    });
+    expect(result.current.snapshots[0].report.cpu.usagePercent).toBe(30);
+
+    await act(async () => {
+      olderResponse.resolve(Response.json([snapshot({ cpuUsage: 20 })]));
+      await olderRefresh;
+    });
+    expect(result.current.snapshots[0].report.cpu.usagePercent).toBe(30);
+  });
+
+  it("preserves a server introduced by SSE after a refresh begins", async () => {
+    const refreshResponse = deferredResponse();
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json([snapshot({ serverId: 1, serverName: "alpha" })]),
+      )
+      .mockImplementationOnce(() => refreshResponse.promise);
+    const { result } = renderHook(() => useServerSnapshots());
+    await waitFor(() => expect(result.current.snapshots).toHaveLength(1));
+
+    let refreshPromise!: Promise<void>;
+    act(() => {
+      refreshPromise = result.current.refresh();
+    });
+    act(() => {
+      FakeEventSource.instances[0].emit(
+        "snapshot.updated",
+        snapshot({ serverId: 2, serverName: "beta", cpuUsage: 42 }),
+      );
+    });
+
+    await act(async () => {
+      refreshResponse.resolve(
+        Response.json([snapshot({ serverId: 1, serverName: "alpha" })]),
+      );
+      await refreshPromise;
+    });
+
+    expect(result.current.snapshots.map(({ serverId }) => serverId)).toEqual([1, 2]);
   });
 
   it("applies offline events and keeps offline servers first", async () => {

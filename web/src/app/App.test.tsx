@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DashboardRouter } from "./App";
@@ -6,16 +6,28 @@ import { DashboardRouter } from "./App";
 const fetchMock = vi.mocked(fetch);
 
 class QuietEventSource {
+  static instance: QuietEventSource | undefined;
   onopen: ((event: Event) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
+
+  constructor() {
+    QuietEventSource.instance = this;
+  }
+
   addEventListener() {}
   close() {}
+
+  open() {
+    this.onopen?.(new Event("open"));
+  }
 }
 
-function detailSnapshot() {
+function detailSnapshot(
+  overrides: Partial<{ serverId: number; serverName: string }> = {},
+) {
   return {
-    serverId: 7,
-    serverName: "home-lab",
+    serverId: overrides.serverId ?? 7,
+    serverName: overrides.serverName ?? "home-lab",
     online: true,
     lastReceivedAt: "2026-07-26T04:00:00Z",
     sourceIp: "192.0.2.10",
@@ -61,8 +73,17 @@ function detailSnapshot() {
   };
 }
 
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("DashboardRouter", () => {
   beforeEach(() => {
+    QuietEventSource.instance = undefined;
     window.history.replaceState(null, "", "/servers/7");
     vi.stubGlobal("EventSource", QuietEventSource as unknown as typeof EventSource);
   });
@@ -98,7 +119,77 @@ describe("DashboardRouter", () => {
     fetchMock.mockResolvedValueOnce(Response.json([]));
     window.history.pushState(null, "", "/");
     window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(QuietEventSource.instance).toBeDefined());
+    act(() => QuietEventSource.instance?.open());
 
     expect(await screen.findByText("还没有服务器来报到")).toBeInTheDocument();
+  });
+
+  it("loads a new server on detail-to-detail popstate navigation", async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json(detailSnapshot()))
+      .mockResolvedValueOnce(
+        Response.json(detailSnapshot({ serverId: 8, serverName: "office-lab" })),
+      );
+    render(<DashboardRouter />);
+    await screen.findByRole("heading", { name: "home-lab" });
+
+    window.history.pushState(null, "", "/servers/8");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    expect(
+      await screen.findByRole("heading", { name: "office-lab" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "home-lab" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale response from the previous detail route", async () => {
+    const oldResponse = deferredResponse();
+    fetchMock
+      .mockImplementationOnce(() => oldResponse.promise)
+      .mockResolvedValueOnce(
+        Response.json(detailSnapshot({ serverId: 8, serverName: "office-lab" })),
+      );
+    render(<DashboardRouter />);
+
+    window.history.pushState(null, "", "/servers/8");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await screen.findByRole("heading", { name: "office-lab" });
+
+    await act(async () => {
+      oldResponse.resolve(Response.json(detailSnapshot()));
+    });
+
+    expect(screen.getByRole("heading", { name: "office-lab" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "home-lab" })).not.toBeInTheDocument();
+  });
+
+  it("does not leave the previous server visible when the destination fails", async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json(detailSnapshot()))
+      .mockResolvedValueOnce(
+        Response.json({ error: "server not found" }, { status: 404 }),
+      );
+    render(<DashboardRouter />);
+    await screen.findByRole("heading", { name: "home-lab" });
+
+    window.history.pushState(null, "", "/servers/8");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("server not found");
+    expect(screen.queryByRole("heading", { name: "home-lab" })).not.toBeInTheDocument();
+  });
+
+  it("rejects an invalid detail destination without fetching", async () => {
+    window.history.replaceState(null, "", "/servers/0");
+
+    render(<DashboardRouter />);
+
+    expect(
+      screen.getByRole("heading", { name: "服务器地址无效" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled());
   });
 });

@@ -44,6 +44,7 @@ export function ServerDetailPage({
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
+    setSnapshot(null);
     setLoading(true);
     setError(null);
     api
@@ -132,6 +133,7 @@ export function ServerDetailPage({
     : null;
   const host = snapshot.report.host;
   const network = snapshot.report.network;
+  const disks = snapshot.report.disks ?? [];
 
   return (
     <main className="dashboard-content detail-page" id="main-content">
@@ -290,9 +292,9 @@ export function ServerDetailPage({
 
           <article className="detail-metric-group detail-metric-group--wide">
             <h3>磁盘</h3>
-            {reported && snapshot.report.disks.length > 0 ? (
+            {reported && disks.length > 0 ? (
               <div className="disk-list">
-                {snapshot.report.disks.map((disk) => (
+                {disks.map((disk) => (
                   <div className="disk-row" key={disk.mountpoint}>
                     <strong>{disk.mountpoint}</strong>
                     <MetricBar

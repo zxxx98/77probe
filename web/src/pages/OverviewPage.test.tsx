@@ -77,6 +77,10 @@ class FakeEventSource {
   addEventListener() {}
   close() {}
 
+  open() {
+    this.onopen?.(new Event("open"));
+  }
+
   fail() {
     this.onerror?.(new Event("error"));
   }
@@ -108,6 +112,8 @@ describe("OverviewPage", () => {
 
     render(<OverviewPage onNavigate={vi.fn()} />);
 
+    act(() => FakeEventSource.instance?.open());
+
     expect(await screen.findByText("还没有服务器来报到")).toBeInTheDocument();
     expect(screen.getByText(/添加服务器后/)).toBeInTheDocument();
   });
@@ -122,7 +128,28 @@ describe("OverviewPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "状态服务暂时不可用",
     );
+    expect(
+      screen.getByRole("heading", { name: "暂时无法确认服务器状态" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "服务器们都很安稳" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新获取" })).toBeEnabled();
+  });
+
+  it("uses checking copy before the initial status request settles", () => {
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+
+    render(<OverviewPage onNavigate={vi.fn()} />);
+
+    expect(
+      screen.getByRole("heading", { name: "正在确认服务器状态" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("正在看看每台服务器的近况。"))
+      .toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "服务器们都很安稳" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps stale current data visible when the live connection drops", async () => {

@@ -540,7 +540,7 @@
   border: 0;
 }
 
-@media (max-width: 72rem) {
+@media (max-width: 76.5rem) {
   .server-row {
     grid-template-columns:
       minmax(9rem, 1.35fr) minmax(6rem, .85fr) minmax(5.5rem, .7fr)

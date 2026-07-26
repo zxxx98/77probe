@@ -39,17 +39,25 @@ function reconcileFetch(
   const currentById = new Map(
     current.map((snapshot) => [snapshot.serverId, snapshot]),
   );
-  return sortSnapshots(
-    fetched.map((incoming) => {
-      const existing = currentById.get(incoming.serverId);
-      if (!existing) {
-        return incoming;
-      }
-      return (eventRevisions.get(incoming.serverId) ?? 0) > requestRevision
-        ? existing
-        : incoming;
-    }),
-  );
+  const fetchedIds = new Set(fetched.map((snapshot) => snapshot.serverId));
+  const reconciled = fetched.map((incoming) => {
+    const existing = currentById.get(incoming.serverId);
+    if (!existing) {
+      return incoming;
+    }
+    return (eventRevisions.get(incoming.serverId) ?? 0) > requestRevision
+      ? existing
+      : incoming;
+  });
+  for (const existing of current) {
+    if (
+      !fetchedIds.has(existing.serverId) &&
+      (eventRevisions.get(existing.serverId) ?? 0) > requestRevision
+    ) {
+      reconciled.push(existing);
+    }
+  }
+  return sortSnapshots(reconciled);
 }
 
 function parseSnapshotEvent(event: MessageEvent<string>): ServerSnapshot | null {
@@ -71,15 +79,14 @@ function parseSnapshotEvent(event: MessageEvent<string>): ServerSnapshot | null 
 export interface ServerSnapshotsState {
   snapshots: ServerSnapshot[];
   connected: boolean;
-  loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
 }
 
 export function useServerSnapshots(): ServerSnapshotsState {
   const [snapshots, setSnapshots] = useState<ServerSnapshot[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [liveConnected, setLiveConnected] = useState(false);
+  const [settled, setSettled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const openedRef = useRef(false);
@@ -87,14 +94,20 @@ export function useServerSnapshots(): ServerSnapshotsState {
   const controllersRef = useRef(new Set<AbortController>());
   const eventRevisionRef = useRef(0);
   const serverEventRevisionsRef = useRef(new Map<number, number>());
+  const requestGenerationRef = useRef(0);
 
   async function refresh() {
     const controller = new AbortController();
     const requestRevision = eventRevisionRef.current;
+    const requestGeneration = requestGenerationRef.current + 1;
+    requestGenerationRef.current = requestGeneration;
     controllersRef.current.add(controller);
     try {
       const next = await api.getServerStatuses(controller.signal);
-      if (!mountedRef.current) {
+      if (
+        !mountedRef.current ||
+        requestGeneration !== requestGenerationRef.current
+      ) {
         return;
       }
       setSnapshots((current) =>
@@ -107,14 +120,21 @@ export function useServerSnapshots(): ServerSnapshotsState {
       );
       setError((current) => (current === CONNECTION_ERROR ? current : null));
     } catch (loadError) {
-      if (!mountedRef.current || controller.signal.aborted) {
+      if (
+        !mountedRef.current ||
+        controller.signal.aborted ||
+        requestGeneration !== requestGenerationRef.current
+      ) {
         return;
       }
       setError(apiErrorMessage(loadError, LOAD_ERROR));
     } finally {
       controllersRef.current.delete(controller);
-      if (mountedRef.current) {
-        setLoading(false);
+      if (
+        mountedRef.current &&
+        requestGeneration === requestGenerationRef.current
+      ) {
+        setSettled(true);
       }
     }
   }
@@ -142,7 +162,7 @@ export function useServerSnapshots(): ServerSnapshotsState {
       if (!mountedRef.current) {
         return;
       }
-      setConnected(true);
+      setLiveConnected(true);
       setError((current) => (current === CONNECTION_ERROR ? null : current));
       if (openedRef.current || connectionFailedRef.current) {
         void refresh();
@@ -154,7 +174,7 @@ export function useServerSnapshots(): ServerSnapshotsState {
       if (!mountedRef.current) {
         return;
       }
-      setConnected(false);
+      setLiveConnected(false);
       connectionFailedRef.current = true;
       setError(CONNECTION_ERROR);
     };
@@ -167,5 +187,10 @@ export function useServerSnapshots(): ServerSnapshotsState {
     };
   }, []);
 
-  return { snapshots, connected, loading, error, refresh };
+  return {
+    snapshots,
+    connected: settled && liveConnected,
+    error,
+    refresh,
+  };
 }

@@ -20,10 +20,28 @@ function statusCopy(total: number, online: number): string {
 }
 
 export function OverviewPage({ onNavigate }: OverviewPageProps) {
-  const { snapshots, connected, loading, error, refresh } = useServerSnapshots();
+  const { snapshots, connected, error, refresh } = useServerSnapshots();
   const online = snapshots.filter((snapshot) => snapshot.online).length;
-  const initialError = Boolean(error && snapshots.length === 0 && !loading);
+  const initialLoading = snapshots.length === 0 && !connected && !error;
+  const initialError = Boolean(error && snapshots.length === 0);
   const disconnected = Boolean(error?.startsWith("实时连接已断开"));
+  const introHeading = initialLoading
+    ? "正在确认服务器状态"
+    : initialError
+      ? "暂时无法确认服务器状态"
+      : snapshots.length > online
+        ? "有服务器需要看一眼"
+        : "服务器们都很安稳";
+  const introStatus = initialLoading
+    ? "正在看看每台服务器的近况。"
+    : initialError
+      ? "这会儿还不能确认服务器是否安稳。"
+      : statusCopy(snapshots.length, online);
+  const introDotClass = initialError
+    ? " status-dot--offline"
+    : initialLoading || snapshots.length > online
+      ? " status-dot--attention"
+      : "";
 
   const retry = (event: MouseEvent<HTMLButtonElement>) => {
     event.currentTarget.blur();
@@ -34,15 +52,10 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
     <main className="dashboard-content" id="main-content">
       <section className="overview-intro" aria-labelledby="overview-title">
         <p className="calm-status">
-          <span
-            className={`status-dot${snapshots.length > online ? " status-dot--attention" : ""}`}
-            aria-hidden="true"
-          />
-          {statusCopy(snapshots.length, online)}
+          <span className={`status-dot${introDotClass}`} aria-hidden="true" />
+          {introStatus}
         </p>
-        <h1 id="overview-title">
-          {snapshots.length > online ? "有服务器需要看一眼" : "服务器们都很安稳"}
-        </h1>
+        <h1 id="overview-title">{introHeading}</h1>
         <p className="overview-description">
           一眼确认家里和身边的小服务器，安静地持续工作着。
         </p>
@@ -50,7 +63,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
 
       {snapshots.length > 0 ? <SummaryPanel snapshots={snapshots} /> : null}
 
-      {loading && snapshots.length === 0 ? (
+      {initialLoading ? (
         <section className="dashboard-state dashboard-state--loading" role="status">
           <span className="loading-indicator" aria-hidden="true" />
           <div>
@@ -72,7 +85,7 @@ export function OverviewPage({ onNavigate }: OverviewPageProps) {
         </section>
       ) : null}
 
-      {!loading && !initialError && snapshots.length === 0 ? (
+      {connected && !initialError && snapshots.length === 0 ? (
         <section className="dashboard-state dashboard-empty">
           <div>
             <h2>还没有服务器来报到</h2>

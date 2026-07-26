@@ -11,9 +11,9 @@ export function percentage(used: number, total: number): number | null {
   return (used / total) * 100;
 }
 
-export function highestDiskUsage(disks: DiskStats[]): number | null {
+export function highestDiskUsage(disks: DiskStats[] | null): number | null {
   let highest: number | null = null;
-  for (const disk of disks) {
+  for (const disk of disks ?? []) {
     const usage = percentage(disk.usedBytes, disk.totalBytes);
     if (usage !== null && (highest === null || usage > highest)) {
       highest = usage;

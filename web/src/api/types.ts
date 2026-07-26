@@ -51,7 +51,7 @@ export interface AgentReport {
   host: HostInfo;
   cpu: CPUStats;
   memory: MemoryStats;
-  disks: DiskStats[];
+  disks: DiskStats[] | null;
   diskIo: DiskIOStats;
   network: NetworkStats;
 }

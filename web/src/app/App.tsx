@@ -5,7 +5,34 @@ import { AppNav } from "../components/AppNav";
 import { OverviewPage } from "../pages/OverviewPage";
 import { ServerDetailPage } from "../pages/ServerDetailPage";
 
-const detailPath = /^\/servers\/(\d+)\/?$/;
+const detailPath = /^\/servers\/([^/]+)\/?$/;
+
+interface InvalidServerPageProps {
+  onNavigate: (path: string) => void;
+}
+
+function InvalidServerPage({ onNavigate }: InvalidServerPageProps) {
+  return (
+    <main className="dashboard-content" id="main-content">
+      <a
+        className="back-link"
+        href="/"
+        onClick={(event) => {
+          event.preventDefault();
+          onNavigate("/");
+        }}
+      >
+        <span aria-hidden="true">←</span> 返回概览
+      </a>
+      <section className="dashboard-state" role="alert">
+        <div>
+          <h1>服务器地址无效</h1>
+          <p>请从概览中选择一台服务器。</p>
+        </div>
+      </section>
+    </main>
+  );
+}
 
 export function DashboardRouter() {
   const [pathname, setPathname] = useState(window.location.pathname);
@@ -24,6 +51,9 @@ export function DashboardRouter() {
   };
 
   const detailMatch = pathname.match(detailPath);
+  const serverId = detailMatch ? Number(detailMatch[1]) : null;
+  const validServerId =
+    serverId !== null && Number.isSafeInteger(serverId) && serverId > 0;
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -31,7 +61,15 @@ export function DashboardRouter() {
       </a>
       <AppNav pathname={detailMatch ? pathname : "/"} onNavigate={navigate} />
       {detailMatch ? (
-        <ServerDetailPage serverId={Number(detailMatch[1])} onNavigate={navigate} />
+        validServerId ? (
+          <ServerDetailPage
+            key={serverId}
+            serverId={serverId}
+            onNavigate={navigate}
+          />
+        ) : (
+          <InvalidServerPage onNavigate={navigate} />
+        )
       ) : (
         <OverviewPage onNavigate={navigate} />
       )}
