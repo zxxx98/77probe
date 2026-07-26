@@ -192,4 +192,22 @@ describe("DashboardRouter", () => {
     ).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).not.toHaveBeenCalled());
   });
+
+  it("routes the server-management navigation item to the management page", async () => {
+    window.history.replaceState(null, "", "/servers");
+    fetchMock.mockResolvedValueOnce(Response.json([]));
+
+    render(<DashboardRouter />);
+
+    expect(
+      await screen.findByRole("heading", { name: "服务器管理" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "服务器" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("link", { name: "概览" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
 });

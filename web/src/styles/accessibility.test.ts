@@ -12,6 +12,10 @@ const nodeProcess = (
 ).process;
 const { readFileSync } = nodeProcess.getBuiltinModule("fs");
 const baseCss = readFileSync(`${nodeProcess.cwd()}/src/styles/base.css`, "utf8");
+const dashboardCss = readFileSync(
+  `${nodeProcess.cwd()}/src/styles/dashboard.css`,
+  "utf8",
+);
 const tokensCss = readFileSync(
   `${nodeProcess.cwd()}/src/styles/tokens.css`,
   "utf8",
@@ -88,6 +92,15 @@ describe("authentication accessibility colors", () => {
     ).toBeGreaterThanOrEqual(4.5);
     expect(baseCss).toMatch(
       /\.form-error[\s\S]*?color: var\(--color-danger-text\)/,
+    );
+  });
+
+  it("uses the darker danger token for destructive buttons with white text", () => {
+    expect(
+      contrastRatio(token("--color-danger-text"), token("--color-bg")),
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(dashboardCss).toMatch(
+      /\.button-danger\s*\{[^}]*background:\s*var\(--color-danger-text\)[^}]*color:\s*var\(--color-bg\)/s,
     );
   });
 });

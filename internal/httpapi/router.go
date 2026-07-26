@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"strings"
 
@@ -14,15 +15,19 @@ import (
 )
 
 type Dependencies struct {
-	Auth    *auth.Service
-	Servers *servers.Service
-	Live    *live.Handler
+	Auth       *auth.Service
+	Servers    *servers.Service
+	Live       *live.Handler
+	AgentFiles fs.FS
 }
 
 func NewRouter(deps Dependencies) http.Handler {
 	r := chi.NewRouter()
 	spa := webui.Handler()
 	r.Get("/api/health", health)
+	downloads := AgentDownloadHandler(deps.AgentFiles)
+	r.Handle("/downloads", downloads)
+	r.Handle("/downloads/*", downloads)
 
 	authHandler := auth.NewHandler(deps.Auth)
 	serverHandler := servers.NewHandler(deps.Servers)

@@ -4,6 +4,7 @@ import { AuthGate } from "../auth/AuthGate";
 import { AppNav } from "../components/AppNav";
 import { OverviewPage } from "../pages/OverviewPage";
 import { ServerDetailPage } from "../pages/ServerDetailPage";
+import { ServersPage } from "../pages/ServersPage";
 
 const detailPath = /^\/servers\/([^/]+)\/?$/;
 
@@ -51,6 +52,7 @@ export function DashboardRouter() {
   };
 
   const detailMatch = pathname.match(detailPath);
+  const managementPath = pathname === "/servers" || pathname === "/servers/";
   const serverId = detailMatch ? Number(detailMatch[1]) : null;
   const validServerId =
     serverId !== null && Number.isSafeInteger(serverId) && serverId > 0;
@@ -59,7 +61,7 @@ export function DashboardRouter() {
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
-      <AppNav pathname={detailMatch ? pathname : "/"} onNavigate={navigate} />
+      <AppNav pathname={pathname} onNavigate={navigate} />
       {detailMatch ? (
         validServerId ? (
           <ServerDetailPage
@@ -70,6 +72,8 @@ export function DashboardRouter() {
         ) : (
           <InvalidServerPage onNavigate={navigate} />
         )
+      ) : managementPath ? (
+        <ServersPage />
       ) : (
         <OverviewPage onNavigate={navigate} />
       )}
