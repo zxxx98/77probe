@@ -69,19 +69,22 @@ func TestGopsutilSourceHostCPUAndMemory(t *testing.T) {
 }
 
 func TestGopsutilSourceFiltersPersistentDisks(t *testing.T) {
+	requestedAll := false
 	source := newGopsutilSource(gopsutilDeps{
-		partitions: func(context.Context, bool) ([]disk.PartitionStat, error) {
+		partitions: func(_ context.Context, all bool) ([]disk.PartitionStat, error) {
+			requestedAll = all
 			return []disk.PartitionStat{
 				{Mountpoint: "/", Fstype: "ext4"},
-				{Mountpoint: "/data", Fstype: "xfs"},
+				{Mountpoint: "/net/nfs", Fstype: "nfs"},
+				{Mountpoint: "/net/cifs", Fstype: "cifs"},
+				{Mountpoint: "/net/sshfs", Fstype: "fuse.sshfs"},
 				{Mountpoint: "/run", Fstype: "tmpfs"},
+				{Mountpoint: "/container", Fstype: "overlay"},
+				{Mountpoint: "/sys/fs/cgroup", Fstype: "cgroup2"},
 			}, nil
 		},
-		diskUsage: func(_ context.Context, mountpoint string) (*disk.UsageStat, error) {
-			if mountpoint == "/" {
-				return &disk.UsageStat{Total: 1_000, Used: 500}, nil
-			}
-			return &disk.UsageStat{Total: 2_000, Used: 1_500}, nil
+		diskUsage: func(context.Context, string) (*disk.UsageStat, error) {
+			return &disk.UsageStat{Total: 1_000, Used: 500}, nil
 		},
 	})
 
@@ -89,7 +92,14 @@ func TestGopsutilSourceFiltersPersistentDisks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PersistentDisks() error = %v", err)
 	}
-	if len(disks) != 2 || disks[0].Mountpoint != "/" || disks[1].Mountpoint != "/data" {
+	if !requestedAll {
+		t.Fatal("PersistentDisks() requested partitions with all=false, want all=true")
+	}
+	gotMountpoints := make([]string, 0, len(disks))
+	for _, disk := range disks {
+		gotMountpoints = append(gotMountpoints, disk.Mountpoint)
+	}
+	if got, want := strings.Join(gotMountpoints, ","), "/,/net/nfs,/net/cifs,/net/sshfs"; got != want {
 		t.Fatalf("PersistentDisks() = %+v", disks)
 	}
 }
@@ -184,6 +194,49 @@ func TestDefaultRouteInterfaceSelectsZeroDestinationAndMask(t *testing.T) {
 	}
 	if interfaceName != "eth0" {
 		t.Fatalf("defaultRouteInterface() = %q, want eth0", interfaceName)
+	}
+}
+
+func TestDefaultRouteInterfaceIgnoresDownRejectedAndMalformedCandidates(t *testing.T) {
+	routes := strings.NewReader("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" +
+		"down0\t00000000\t0108A8C0\t0000\t0\t0\t1\t00000000\n" +
+		"reject0\t00000000\t0108A8C0\t0201\t0\t0\t2\t00000000\n" +
+		"badflags0\t00000000\t0108A8C0\tZZZZ\t0\t0\t0\t00000000\n" +
+		"badmetric0\t00000000\t0108A8C0\t0001\t0\t0\tinvalid\t00000000\n" +
+		"eth0\t00000000\t0108A8C0\t0003\t0\t0\t50\t00000000\n")
+
+	interfaceName, err := defaultRouteInterface(routes)
+	if err != nil {
+		t.Fatalf("defaultRouteInterface() error = %v", err)
+	}
+	if interfaceName != "eth0" {
+		t.Fatalf("defaultRouteInterface() = %q, want eth0", interfaceName)
+	}
+}
+
+func TestDefaultRouteInterfaceSelectsLowestMetricWithStableTie(t *testing.T) {
+	routes := strings.NewReader("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" +
+		"eth-high\t00000000\t0108A8C0\t0003\t0\t0\t200\t00000000\n" +
+		"eth-low-first\t00000000\t0108A8C0\t0003\t0\t0\t10\t00000000\n" +
+		"eth-low-second\t00000000\t0108A8C0\t0003\t0\t0\t10\t00000000\n")
+
+	interfaceName, err := defaultRouteInterface(routes)
+	if err != nil {
+		t.Fatalf("defaultRouteInterface() error = %v", err)
+	}
+	if interfaceName != "eth-low-first" {
+		t.Fatalf("defaultRouteInterface() = %q, want eth-low-first", interfaceName)
+	}
+}
+
+func TestDefaultRouteInterfaceReturnsClearErrorWhenNoValidRouteExists(t *testing.T) {
+	routes := strings.NewReader("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" +
+		"down0\t00000000\t0108A8C0\t0000\t0\t0\t1\t00000000\n" +
+		"reject0\t00000000\t0108A8C0\t0201\t0\t0\t2\t00000000\n")
+
+	_, err := defaultRouteInterface(routes)
+	if err == nil || !strings.Contains(err.Error(), "valid default route") {
+		t.Fatalf("defaultRouteInterface() error = %v, want clear no-valid-route error", err)
 	}
 }
 

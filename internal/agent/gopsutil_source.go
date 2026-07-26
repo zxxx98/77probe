@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -142,7 +143,7 @@ func (s *GopsutilSource) Memory(ctx context.Context) (protocol.MemoryStats, erro
 }
 
 func (s *GopsutilSource) PersistentDisks(ctx context.Context) ([]protocol.DiskStats, error) {
-	partitions, err := s.deps.partitions(ctx, false)
+	partitions, err := s.deps.partitions(ctx, true)
 	if err != nil {
 		return nil, fmt.Errorf("read partitions: %w", err)
 	}
@@ -256,6 +257,10 @@ func isPersistentFilesystem(filesystem string) bool {
 }
 
 func defaultRouteInterface(reader io.Reader) (string, error) {
+	const (
+		routeFlagUp     = 0x1
+		routeFlagReject = 0x200
+	)
 	scanner := bufio.NewScanner(reader)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -263,16 +268,33 @@ func defaultRouteInterface(reader io.Reader) (string, error) {
 		}
 		return "", fmt.Errorf("route table is empty")
 	}
+	var selectedInterface string
+	var selectedMetric uint64
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 8 && fields[1] == "00000000" && fields[7] == "00000000" {
-			return fields[0], nil
+		if len(fields) < 8 || fields[1] != "00000000" || fields[7] != "00000000" {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[3], 16, 64)
+		if err != nil || flags&routeFlagUp == 0 || flags&routeFlagReject != 0 {
+			continue
+		}
+		metric, err := strconv.ParseUint(fields[6], 10, 64)
+		if err != nil {
+			continue
+		}
+		if selectedInterface == "" || metric < selectedMetric {
+			selectedInterface = fields[0]
+			selectedMetric = metric
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("read route table: %w", err)
 	}
-	return "", fmt.Errorf("default route not found")
+	if selectedInterface == "" {
+		return "", fmt.Errorf("valid default route not found")
+	}
+	return selectedInterface, nil
 }
 
 func aggregatePhysicalDiskIO(counters map[string]disk.IOCountersStat, physical func(string) bool) (uint64, uint64) {
