@@ -186,6 +186,21 @@ func (s *Service) AuthenticateToken(ctx context.Context, rawToken string) (Serve
 	return server, nil
 }
 
+func (s *Service) UpdateAgentVersion(ctx context.Context, id int64, version string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE servers SET agent_version=? WHERE id=?`, version, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

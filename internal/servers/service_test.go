@@ -119,6 +119,26 @@ func TestSetEnabledFalseRejectsToken(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentVersionPersistsReportedVersion(t *testing.T) {
+	svc, _ := newServerService(t)
+	ctx := context.Background()
+	server, _, err := svc.Create(ctx, "home-lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.UpdateAgentVersion(ctx, server.ID, "1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := svc.Get(ctx, server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AgentVersion != "1.2.3" {
+		t.Fatalf("agent version=%q", updated.AgentVersion)
+	}
+}
+
 func TestUpdateChangesOnlyRequestedFieldAndRejectsDeleteDuringUpdate(t *testing.T) {
 	svc, conn := newServerService(t)
 	ctx := context.Background()
