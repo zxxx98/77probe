@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"probe.local/monitor/internal/app"
@@ -18,7 +19,14 @@ func main() {
 	if addr == "" {
 		addr = ":8080"
 	}
-	if err := app.Run(ctx, addr); err != nil {
+	databasePath := strings.TrimSpace(os.Getenv("TINYPROBE_DB_PATH"))
+	if databasePath == "" {
+		databasePath = "tinyprobe.db"
+	}
+	if err := app.Run(ctx, addr, app.Config{
+		DatabasePath: databasePath,
+		AgentFiles:   os.DirFS("downloads"),
+	}); err != nil {
 		log.Fatal(err)
 	}
 }

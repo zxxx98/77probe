@@ -17,7 +17,7 @@
 - Task 7: complete (`4baf807..4e8da42`, review clean) — Scaffold the React application and authentication flows
 - Task 8: complete (`4e8da42..47feec2`, review clean) — Build the responsive live overview and server detail pages
 - Task 9: complete (`47feec2..a2296b1`, review clean) — Build server management and one-time Agent installation flow
-- Task 10: pending — Compose the application, container build, and acceptance smoke test
+- Task 10: complete — Compose the application, container build contract, load generator, and non-Docker acceptance smoke test
 
 ## Review Ledger
 
@@ -43,3 +43,6 @@
 - Task 8 browser smoke: overview SSE updates, offline-first rows, detail navigation, disabled history ranges, and actual DOM widths at 1440, 1223, 1200, 1180, 1153, 980, 640, and 390px all showed no horizontal overflow; cumulative fields hid below desktop while mobile-core fields remained visible.
 - Task 9: `pnpm --dir web test -- --run` passed 87/87 tests; frontend lint/build, full Go tests, `go vet ./...`, and `git diff --check` passed on `a2296b1`.
 - Task 9 browser smoke: create, one-time Token acknowledgement, amd64/arm64 switch, clipboard feedback, inline rename, disable/enable, rotation confirmation, deletion confirmation, focus restoration, and a 390px management/install layout were exercised against a disposable database. The document had no horizontal overflow, visible controls met 44px targets, and command blocks scrolled locally. Missing Task 10 Agent files returned `404`; unsupported download methods returned `405` with `Allow: GET, HEAD`.
+- Task 10: `go test ./...`, `go vet ./...`, `pnpm --dir web test -- --run` (87/87), frontend lint/build, deployment contract tests, Linux `amd64`/`arm64` Agent cross-builds, Windows server build, and `go run ./cmd/loadgen --help` passed.
+- Task 10 non-Docker acceptance: a disposable local service created one administrator and 10 independently-tokened servers, served both real Agent binaries, accepted six seconds of reports from 10 simulated Agents, showed all 10 online, then marked all 10 offline after reports stopped. Disposable Token, SQLite, server, and Agent binary artifacts were permanently removed afterward.
+- Docker image and Compose execution were intentionally skipped because Docker was unavailable and the user requested that Docker verification be deferred; static Dockerfile/Compose contract tests passed instead.

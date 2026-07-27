@@ -1,3 +1,8 @@
 .superpowers/
 .worktrees/
 web/node_modules/
+downloads/
+tokens.txt
+tinyprobe.db
+tinyprobe.db-shm
+tinyprobe.db-wal

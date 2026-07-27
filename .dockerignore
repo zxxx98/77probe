@@ -1,0 +1,10 @@
+.git
+.worktrees
+.superpowers
+web/node_modules
+internal/webui/dist
+tinyprobe.db
+*.db
+*.db-shm
+*.db-wal
+*.log

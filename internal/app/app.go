@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
-	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"probe.local/monitor/internal/auth"
@@ -23,7 +26,19 @@ type runtime struct {
 	sweeper *live.Sweeper
 }
 
-func newRuntime(conn *sql.DB) (*runtime, error) {
+type Config struct {
+	DatabasePath string
+	AgentFiles   fs.FS
+}
+
+type Application struct {
+	conn      *sql.DB
+	runtime   *runtime
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 	authService := auth.NewService(conn)
 	serverService := servers.NewService(conn)
 	store := live.NewStore()
@@ -34,11 +49,54 @@ func newRuntime(conn *sql.DB) (*runtime, error) {
 	}
 	liveHandler := live.NewHandler(coordinator)
 	return &runtime{
-		handler: httpapi.NewRouter(httpapi.Dependencies{Auth: authService, Servers: serverService, Live: liveHandler}),
+		handler: httpapi.NewRouter(httpapi.Dependencies{
+			Auth:       authService,
+			Servers:    serverService,
+			Live:       liveHandler,
+			AgentFiles: agentFiles,
+		}),
 		servers: serverService,
 		store:   store,
 		sweeper: live.NewSweeper(coordinator),
 	}, nil
+}
+
+func New(config Config) (*Application, error) {
+	if strings.TrimSpace(config.DatabasePath) == "" {
+		return nil, fmt.Errorf("database path is required")
+	}
+	conn, err := monitorDB.Open(config.DatabasePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := monitorDB.ApplyMigrations(context.Background(), conn); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	runtime, err := newRuntime(conn, config.AgentFiles)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &Application{conn: conn, runtime: runtime}, nil
+}
+
+func (a *Application) Handler() http.Handler {
+	return a.runtime.handler
+}
+
+func (a *Application) RunBackground(ctx context.Context) <-chan struct{} {
+	return a.runtime.startSweeper(ctx)
+}
+
+func (a *Application) Close() error {
+	if a == nil || a.conn == nil {
+		return nil
+	}
+	a.closeOnce.Do(func() {
+		a.closeErr = a.conn.Close()
+	})
+	return a.closeErr
 }
 
 func (r *runtime) startSweeper(ctx context.Context) <-chan struct{} {
@@ -50,33 +108,21 @@ func (r *runtime) startSweeper(ctx context.Context) <-chan struct{} {
 	return done
 }
 
-func Run(ctx context.Context, addr string) error {
-	dbPath := os.Getenv("TINYPROBE_DB_PATH")
-	if dbPath == "" {
-		dbPath = "tinyprobe.db"
-	}
-	conn, err := monitorDB.Open(dbPath)
+func Run(ctx context.Context, addr string, config Config) error {
+	application, err := New(config)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	if err := monitorDB.ApplyMigrations(ctx, conn); err != nil {
-		return err
-	}
-
-	runtime, err := newRuntime(conn)
-	if err != nil {
-		return err
-	}
+	defer application.Close()
 	liveCtx, cancelLive := context.WithCancel(ctx)
-	liveDone := runtime.startSweeper(liveCtx)
+	liveDone := application.RunBackground(liveCtx)
 	defer func() {
 		cancelLive()
 		<-liveDone
 	}()
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: runtime.handler,
+		Handler: application.Handler(),
 		BaseContext: func(net.Listener) context.Context {
 			return liveCtx
 		},
