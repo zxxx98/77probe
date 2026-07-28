@@ -12,6 +12,7 @@ type Event struct {
 type Hub struct {
 	mu          sync.Mutex
 	subscribers map[chan Event]struct{}
+	closed      bool
 }
 
 func NewHub() *Hub {
@@ -21,6 +22,9 @@ func NewHub() *Hub {
 func (h *Hub) Publish(event Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
 	for subscriber := range h.subscribers {
 		delivery := cloneEvent(event)
 		select {
@@ -46,15 +50,35 @@ func cloneEvent(event Event) Event {
 func (h *Hub) Subscribe() (<-chan Event, func()) {
 	subscriber := make(chan Event, subscriberCapacity)
 	h.mu.Lock()
+	if h.closed {
+		close(subscriber)
+		h.mu.Unlock()
+		return subscriber, func() {}
+	}
 	h.subscribers[subscriber] = struct{}{}
 	h.mu.Unlock()
 	var once sync.Once
 	return subscriber, func() {
 		once.Do(func() {
 			h.mu.Lock()
-			delete(h.subscribers, subscriber)
-			close(subscriber)
+			if _, subscribed := h.subscribers[subscriber]; subscribed {
+				delete(h.subscribers, subscriber)
+				close(subscriber)
+			}
 			h.mu.Unlock()
 		})
+	}
+}
+
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	for subscriber := range h.subscribers {
+		delete(h.subscribers, subscriber)
+		close(subscriber)
 	}
 }

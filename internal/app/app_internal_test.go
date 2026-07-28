@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	monitorDB "probe.local/monitor/internal/db"
 	"probe.local/monitor/internal/history"
+	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/protocol"
 	"probe.local/monitor/internal/servers"
 )
@@ -138,6 +140,10 @@ func TestApplicationRunBackgroundStartsOnlyOnce(t *testing.T) {
 func TestApplicationCloseCancelsWaitsThenClosesDatabaseAndIsConcurrentSafe(t *testing.T) {
 	runner := newLifecycleRunner()
 	application, conn := newLifecycleApplication(t, runner)
+	streams := &recordingStreamCloser{}
+	application.runtime.streams = streams
+	var streamsClosedBeforeCancel atomic.Bool
+	runner.onCanceled = func() { streamsClosedBeforeCancel.Store(streams.closed.Load()) }
 	application.RunBackground(context.Background())
 	runner.waitStarted(t)
 
@@ -145,6 +151,9 @@ func TestApplicationCloseCancelsWaitsThenClosesDatabaseAndIsConcurrentSafe(t *te
 	go func() { closeResults <- application.Close() }()
 	go func() { closeResults <- application.Close() }()
 	runner.waitCanceled(t)
+	if !streamsClosedBeforeCancel.Load() {
+		t.Fatal("Application.Close canceled background work before closing live streams")
+	}
 	select {
 	case err := <-closeResults:
 		t.Fatalf("Close returned before background runner stopped: %v", err)
@@ -303,6 +312,63 @@ func TestShutdownServerDrainsHistoryAcceptanceBeforeFinalFlushAndDatabaseClose(t
 	}
 }
 
+func TestShutdownServerClosesActiveSSEBeforeGracefulDrain(t *testing.T) {
+	conn, err := monitorDB.Open(filepath.Join(t.TempDir(), "sse-shutdown.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := monitorDB.ApplyMigrations(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	hub := live.NewHub()
+	coordinator := live.NewCoordinator(servers.NewService(conn), live.NewStore(), hub)
+	handler := live.NewHandler(coordinator)
+	application := &Application{
+		conn: conn,
+		runtime: &runtime{
+			streams: hub,
+		},
+	}
+	serverBase, cancelServerBase := context.WithCancel(context.Background())
+	httpServer := &http.Server{
+		Handler: http.HandlerFunc(handler.SSE),
+		BaseContext: func(net.Listener) context.Context {
+			return serverBase
+		},
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- httpServer.Serve(listener) }()
+	response, err := http.Get("http://" + listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("status=%d headers=%v", response.StatusCode, response.Header)
+	}
+	bodyDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, response.Body)
+		bodyDone <- err
+	}()
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancelShutdown()
+	if err := shutdownServer(shutdownCtx, httpServer, application, cancelServerBase); err != nil {
+		t.Fatalf("shutdown with active SSE: %v", err)
+	}
+	if err := <-bodyDone; err != nil {
+		t.Fatalf("SSE body close error: %v", err)
+	}
+	if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("Serve() error = %v, want %v", err, http.ErrServerClosed)
+	}
+}
+
 type blockingBackgroundRunner struct {
 	started  chan struct{}
 	canceled chan struct{}
@@ -316,6 +382,15 @@ type lifecycleRunner struct {
 	started    chan struct{}
 	canceled   chan struct{}
 	release    chan struct{}
+	onCanceled func()
+}
+
+type recordingStreamCloser struct {
+	closed atomic.Bool
+}
+
+func (c *recordingStreamCloser) Close() {
+	c.closed.Store(true)
 }
 
 type finalFlushRunner struct {
@@ -371,6 +446,9 @@ func (r *lifecycleRunner) Run(ctx context.Context) {
 	r.starts.Add(1)
 	r.startOnce.Do(func() { close(r.started) })
 	<-ctx.Done()
+	if r.onCanceled != nil {
+		r.onCanceled()
+	}
 	r.cancelOnce.Do(func() { close(r.canceled) })
 	<-r.release
 }

@@ -2,6 +2,7 @@ package live_test
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"probe.local/monitor/internal/live"
@@ -60,4 +61,52 @@ func TestHubDeliversDetachedEventDisksToEachSubscriber(t *testing.T) {
 	if secondEvent.Snapshot.Report.Disks[0].Mountpoint != "/original" {
 		t.Fatalf("second subscriber mountpoint=%q", secondEvent.Snapshot.Report.Disks[0].Mountpoint)
 	}
+}
+
+func TestHubCloseClosesCurrentAndFutureSubscribersIdempotently(t *testing.T) {
+	hub := live.NewHub()
+	events, cancel := hub.Subscribe()
+
+	hub.Close()
+	hub.Close()
+	cancel()
+	hub.Publish(live.Event{Type: "ignored"})
+
+	if event, open := <-events; open {
+		t.Fatalf("existing subscriber remained open with event %+v", event)
+	}
+	future, cancelFuture := hub.Subscribe()
+	defer cancelFuture()
+	if event, open := <-future; open {
+		t.Fatalf("future subscriber remained open with event %+v", event)
+	}
+}
+
+func TestHubCloseIsSafeAgainstConcurrentCancelAndPublish(t *testing.T) {
+	hub := live.NewHub()
+	cancels := make([]func(), 0, 32)
+	for range 32 {
+		_, cancel := hub.Subscribe()
+		cancels = append(cancels, cancel)
+	}
+
+	var wait sync.WaitGroup
+	wait.Add(len(cancels) + 2)
+	for _, cancel := range cancels {
+		cancel := cancel
+		go func() {
+			defer wait.Done()
+			cancel()
+		}()
+	}
+	go func() {
+		defer wait.Done()
+		hub.Publish(live.Event{Type: "racing"})
+	}()
+	go func() {
+		defer wait.Done()
+		hub.Close()
+	}()
+	wait.Wait()
+	hub.Close()
 }

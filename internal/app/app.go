@@ -27,10 +27,15 @@ type runtime struct {
 	historyStore      *history.Store
 	historyAggregator *history.Aggregator
 	background        []backgroundRunner
+	streams           streamCloser
 }
 
 type backgroundRunner interface {
 	Run(context.Context)
+}
+
+type streamCloser interface {
+	Close()
 }
 
 type Config struct {
@@ -49,6 +54,7 @@ type Application struct {
 	closeStarted      bool
 	closeDone         chan struct{}
 	closeErr          error
+	streamsCloseOnce  sync.Once
 }
 
 func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
@@ -78,6 +84,7 @@ func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 			live.NewSweeper(coordinator),
 			history.NewJobs(historyAggregator, historyStore),
 		},
+		streams: hub,
 	}, nil
 }
 
@@ -150,6 +157,7 @@ func (a *Application) Close() error {
 	closeDone := a.closeDone
 	a.lifecycleMu.Unlock()
 
+	a.closeStreams()
 	if cancel != nil {
 		cancel()
 	}
@@ -164,6 +172,17 @@ func (a *Application) Close() error {
 	close(closeDone)
 	a.lifecycleMu.Unlock()
 	return err
+}
+
+func (a *Application) closeStreams() {
+	if a == nil {
+		return
+	}
+	a.streamsCloseOnce.Do(func() {
+		if a.runtime != nil && a.runtime.streams != nil {
+			a.runtime.streams.Close()
+		}
+	})
 }
 
 func alreadyDone() <-chan struct{} {
@@ -223,6 +242,7 @@ func Run(ctx context.Context, addr string, config Config) error {
 }
 
 func shutdownServer(ctx context.Context, server *http.Server, application *Application, cancelServerBase context.CancelFunc) error {
+	application.closeStreams()
 	shutdownErr := server.Shutdown(ctx)
 	var forceCloseErr error
 	if shutdownErr != nil {
