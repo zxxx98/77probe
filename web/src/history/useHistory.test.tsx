@@ -78,6 +78,45 @@ describe("buildMinuteSeries", () => {
       [720_000, 30],
     ]);
   });
+
+  it("rejects unsafe, off-minute, reversed, and oversized ranges", () => {
+    const thirtyDays = 30 * 24 * 60 * 60;
+
+    expect(buildMinuteSeries([], 600, 600 + thirtyDays + 60, () => 1)).toEqual(
+      [],
+    );
+    expect(buildMinuteSeries([], 601, 720, () => 1)).toEqual([]);
+    expect(buildMinuteSeries([], 720, 600, () => 1)).toEqual([]);
+    expect(
+      buildMinuteSeries(
+        [],
+        Number.MAX_SAFE_INTEGER - 60,
+        Number.MAX_SAFE_INTEGER,
+        () => 1,
+      ),
+    ).toEqual([]);
+    const alignedNearMax = Math.floor(Number.MAX_SAFE_INTEGER / 60) * 60;
+    expect(
+      buildMinuteSeries([], alignedNearMax - 60, alignedNearMax, () => 1),
+    ).toEqual([]);
+  });
+
+  it("ignores off-minute points and nonfinite selector values", () => {
+    const points = [point(600, 10), point(601, 99), point(660, 20), point(720, 30)];
+
+    expect(
+      buildMinuteSeries(points, 600, 720, (value) =>
+        value.minuteUnix === 660 ? Number.NaN : value.payload.cpuUsage.average,
+      ),
+    ).toEqual([
+      [600_000, 10],
+      [660_000, null],
+      [720_000, 30],
+    ]);
+    expect(
+      buildMinuteSeries([point(600, 10)], 600, 600, () => Number.POSITIVE_INFINITY),
+    ).toEqual([[600_000, null]]);
+  });
 });
 
 describe("useHistory", () => {
@@ -207,5 +246,39 @@ describe("useHistory", () => {
     await waitFor(() => expect(result.current.data).not.toBeNull());
     expect(result.current.error).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a malformed history response with the normal safe error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ fromUnix: 601, toUnix: 720, points: [] }),
+    );
+
+    const { result } = renderHook(() => useHistory(507, "1d"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).toBe("暂时无法获取历史指标，请稍后重试。");
+  });
+
+  it("expires a cache entry when the clock moves backwards", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T00:01:00Z"));
+    const cached = response([point(600, 10)]);
+    fetchMock
+      .mockResolvedValueOnce(Response.json(cached))
+      .mockResolvedValueOnce(Response.json(cached));
+
+    const first = renderHook(() => useHistory(607, "1d"));
+    await act(async () => Promise.resolve());
+    expect(first.result.current.data).toEqual(cached);
+    first.unmount();
+
+    vi.setSystemTime(new Date("2026-07-28T00:00:59Z"));
+    const rolledBack = renderHook(() => useHistory(607, "1d"));
+    expect(rolledBack.result.current.loading).toBe(true);
+    await act(async () => Promise.resolve());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(rolledBack.result.current.data).toEqual(cached);
   });
 });

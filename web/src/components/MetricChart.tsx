@@ -2,29 +2,28 @@ import { LineChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { init, use, type EChartsType } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import {
+  prepareChartSeries,
+  type MetricSeriesDefinition,
+  type PreparedMetricSeries,
+} from "../history/chartSeries";
+import type { HistoryResponse } from "../history/types";
 import { formatBytes, formatRate } from "../utils/format";
 
-export type MetricChartPoint = [timestampMs: number, value: number | null];
-
-export interface MetricChartSeries {
-  name: string;
-  data: MetricChartPoint[];
-  role?: "primary" | "maximum" | "context" | "context-maximum";
-}
+export type MetricChartSeries = MetricSeriesDefinition;
 
 interface MetricChartProps {
   title: string;
+  history: HistoryResponse;
   series: MetricChartSeries[];
   formatter: (value: number) => string;
 }
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
-const PRIMARY_COLOR = "#8a3158";
-const MAXIMUM_COLOR = "#c07b94";
-const CONTEXT_COLORS = ["#586973", "#6b7880"];
-const CONTEXT_MAXIMUM_COLOR = "#87939a";
+const AVERAGE_COLORS = ["#8a3158", "#486a78", "#6d5c7d"];
+const MAXIMUM_COLORS = ["#c07b94", "#6f8f9b", "#89769a"];
 
 use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -55,32 +54,37 @@ function useReducedMotion(): boolean {
   return reduced;
 }
 
-function values(series: MetricChartSeries | undefined): number[] {
-  if (!series) {
-    return [];
-  }
-  return series.data.flatMap(([, value]) =>
-    value !== null && Number.isFinite(value) ? [value] : [],
-  );
-}
-
-function current(series: MetricChartSeries | undefined): number | null {
-  const value = series?.data.at(-1)?.[1];
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return null;
-  }
-  return value;
-}
-
 function display(value: number | null, formatter: (value: number) => string) {
   return value === null ? "—" : formatter(value);
 }
 
-export function MetricChart({ title, series, formatter }: MetricChartProps) {
+function lineColor(series: PreparedMetricSeries): string {
+  const palette =
+    series.role === "maximum" || series.role === "context-maximum"
+      ? MAXIMUM_COLORS
+      : AVERAGE_COLORS;
+  const ordinal =
+    Number.isSafeInteger(series.pairOrdinal) && series.pairOrdinal >= 0
+      ? series.pairOrdinal
+      : 0;
+  return palette[ordinal % palette.length]!;
+}
+
+export function MetricChart({
+  title,
+  history,
+  series,
+  formatter,
+}: MetricChartProps) {
   const headingId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<EChartsType | null>(null);
+  const [chartWidth, setChartWidth] = useState(0);
   const reducedMotion = useReducedMotion();
+  const prepared = useMemo(
+    () => prepareChartSeries(history, series, chartWidth),
+    [chartWidth, history, series],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -90,19 +94,33 @@ export function MetricChart({ title, series, formatter }: MetricChartProps) {
 
     const chart = init(container);
     chartRef.current = chart;
-    const resize = () => chart.resize();
+    const resize = (width?: number) => {
+      const measured =
+        width && Number.isFinite(width) && width > 0
+          ? width
+          : container.getBoundingClientRect().width || container.clientWidth;
+      if (measured > 0) {
+        setChartWidth((current) =>
+          Math.abs(current - measured) >= 1 ? measured : current,
+        );
+      }
+      chart.resize();
+    };
+    const resizeFromWindow = () => resize();
     let observer: ResizeObserver | null = null;
     if (typeof ResizeObserver === "function") {
-      observer = new ResizeObserver(resize);
+      observer = new ResizeObserver((entries) =>
+        resize(entries[0]?.contentRect.width),
+      );
       observer.observe(container);
     } else {
-      window.addEventListener("resize", resize);
+      window.addEventListener("resize", resizeFromWindow);
     }
 
     return () => {
       observer?.disconnect();
       if (!observer) {
-        window.removeEventListener("resize", resize);
+        window.removeEventListener("resize", resizeFromWindow);
       }
       chart.dispose();
       chartRef.current = null;
@@ -114,12 +132,6 @@ export function MetricChart({ title, series, formatter }: MetricChartProps) {
       {
         animation: !reducedMotion,
         animationDuration: reducedMotion ? 0 : 260,
-        color: [
-          PRIMARY_COLOR,
-          MAXIMUM_COLOR,
-          ...CONTEXT_COLORS,
-          CONTEXT_MAXIMUM_COLOR,
-        ],
         grid: { top: 42, right: 18, bottom: 34, left: 54 },
         legend: {
           top: 0,
@@ -144,15 +156,8 @@ export function MetricChart({ title, series, formatter }: MetricChartProps) {
           axisLabel: { color: "#746a70", formatter },
           splitLine: { lineStyle: { color: "#eee9ec" } },
         },
-        series: series.map((line, index) => {
-          const color =
-            line.role === "maximum"
-              ? MAXIMUM_COLOR
-              : line.role === "context-maximum"
-                ? CONTEXT_MAXIMUM_COLOR
-                : line.role === "primary" || index === 0
-                  ? PRIMARY_COLOR
-                  : CONTEXT_COLORS[(index - 1) % CONTEXT_COLORS.length];
+        series: prepared.series.map((line) => {
+          const color = lineColor(line);
           const isMaximum =
             line.role === "maximum" || line.role === "context-maximum";
           return {
@@ -166,28 +171,26 @@ export function MetricChart({ title, series, formatter }: MetricChartProps) {
             lineStyle: {
               color,
               type: isMaximum ? "dashed" : "solid",
-              width: line.role === "primary" || index === 0 ? 2.25 : 1.5,
+              width: line.role === "primary" ? 2.25 : 1.5,
               opacity: 1,
             },
             emphasis: { focus: "series" },
+            progressive: 500,
+            progressiveThreshold: 1_000,
           };
         }),
       },
       { notMerge: true, lazyUpdate: true },
     );
-  }, [formatter, reducedMotion, series]);
+  }, [formatter, prepared.series, reducedMotion]);
 
-  const primary = series.find((line) => line.role === "primary") ?? series[0];
-  const maximumSeries = series.find((line) => line.role === "maximum");
-  const primaryValues = values(primary);
-  const maximumValues = values(maximumSeries ?? primary);
-  const average =
-    primaryValues.length === 0
-      ? null
-      : primaryValues.reduce((sum, value) => sum + value, 0) /
-        primaryValues.length;
-  const maximum =
-    maximumValues.length === 0 ? null : Math.max(...maximumValues);
+  const primary =
+    prepared.series.find((line) => line.role === "primary") ??
+    prepared.series[0];
+  const maximumSeries = prepared.series.find(
+    (line) =>
+      line.role === "maximum" && line.pairOrdinal === primary?.pairOrdinal,
+  );
 
   return (
     <section className="metric-chart" aria-labelledby={headingId}>
@@ -196,30 +199,48 @@ export function MetricChart({ title, series, formatter }: MetricChartProps) {
         <dl className="metric-chart-summary" role="group" aria-label={`${title}摘要`}>
           <div>
             <dt>当前</dt>
-            <dd>{display(current(primary), formatter)}</dd>
+            <dd>{display(primary?.stats.current ?? null, formatter)}</dd>
           </div>
           <div>
             <dt>平均</dt>
-            <dd>{display(average, formatter)}</dd>
+            <dd>{display(primary?.stats.average ?? null, formatter)}</dd>
           </div>
           <div>
             <dt>最大</dt>
-            <dd>{display(maximum, formatter)}</dd>
+            <dd>
+              {display(
+                maximumSeries?.stats.maximum ?? primary?.stats.maximum ?? null,
+                formatter,
+              )}
+            </dd>
           </div>
         </dl>
       </div>
-      <dl
-        className="metric-chart-series-values"
-        role="group"
-        aria-label={`${title}各序列当前值`}
-      >
-        {series.map((line, index) => (
-          <div key={`${line.name}-${index}`}>
-            <dt>{line.name}</dt>
-            <dd>{display(current(line), formatter)}</dd>
-          </div>
-        ))}
-      </dl>
+      <div className="metric-chart-series-table-wrap">
+        <table
+          className="metric-chart-series-table"
+          aria-label={`${title}各序列统计`}
+        >
+          <thead>
+            <tr>
+              <th scope="col">序列</th>
+              <th scope="col">当前</th>
+              <th scope="col">平均</th>
+              <th scope="col">最大</th>
+            </tr>
+          </thead>
+          <tbody>
+            {prepared.series.map((line, index) => (
+              <tr key={`${line.name}-${index}`}>
+                <th scope="row">{line.name}</th>
+                <td>{display(line.stats.current, formatter)}</td>
+                <td>{display(line.stats.average, formatter)}</td>
+                <td>{display(line.stats.maximum, formatter)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <div
         ref={containerRef}
         className="metric-chart-canvas"

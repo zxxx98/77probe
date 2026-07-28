@@ -133,6 +133,10 @@ describe("dashboard responsive grid contract", () => {
       .toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
     expect(blockFor(narrowBreakpoint, ".range-strip"))
       .toMatch(/grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+    expect(blockFor(narrowBreakpoint, ".metric-chart-series-table"))
+      .toMatch(/table-layout:\s*fixed/);
+    expect(blockFor(narrowBreakpoint, ".metric-chart-series-table"))
+      .toMatch(/font-size:\s*\.75rem/);
   });
 
   it("removes skeleton and range transition motion for reduced motion", () => {

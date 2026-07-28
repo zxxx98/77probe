@@ -17,7 +17,10 @@ vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }));
 
 import type { ServerSnapshot } from "../api/types";
 import type { HistoryResponse, MinuteRecord } from "../history/types";
-import { ServerDetailPage } from "./ServerDetailPage";
+import {
+  HistoricalChartErrorBoundary,
+  ServerDetailPage,
+} from "./ServerDetailPage";
 
 const fetchMock = vi.mocked(fetch);
 
@@ -293,5 +296,28 @@ describe("ServerDetailPage history", () => {
         "55.0%",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("contains a historical chunk failure and offers a real page reload recovery", () => {
+    const reload = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    function RejectingHistory(): never {
+      throw new Error("historical chunk rejected");
+    }
+
+    render(
+      <main>
+        <h1>server-477</h1>
+        <HistoricalChartErrorBoundary reload={reload}>
+          <RejectingHistory />
+        </HistoricalChartErrorBoundary>
+      </main>,
+    );
+
+    expect(screen.getByRole("heading", { name: "server-477" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("历史图表加载失败");
+    fireEvent.click(screen.getByRole("button", { name: "重新加载页面" }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
   });
 });

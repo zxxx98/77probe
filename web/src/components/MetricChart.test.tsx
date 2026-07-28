@@ -1,6 +1,8 @@
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { HistoryResponse, MinutePayload, MinuteRecord } from "../history/types";
+
 const chart = vi.hoisted(() => ({
   setOption: vi.fn(),
   resize: vi.fn(),
@@ -32,8 +34,11 @@ class TestResizeObserver {
     TestResizeObserver.instance = this;
   }
 
-  emit() {
-    this.callback([], this as unknown as ResizeObserver);
+  emit(width = 800) {
+    this.callback(
+      [{ contentRect: { width } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
   }
 }
 
@@ -69,24 +74,45 @@ function contrastOnWhite(hex: string): number {
   return 1.05 / (relativeLuminance(hex) + 0.05);
 }
 
+function minute(
+  minuteUnix: number,
+  cpuAverage: number,
+  cpuMaximum: number,
+  upload: number,
+  download: number,
+): MinuteRecord {
+  return {
+    serverId: 7,
+    minuteUnix,
+    payload: {
+      cpuUsage: { average: cpuAverage, maximum: cpuMaximum },
+      uploadBps: { average: upload, maximum: upload + 1_024 },
+      downloadBps: { average: download, maximum: download + 1_024 },
+      load1: { average: 1, maximum: 2 },
+      load5: { average: 5, maximum: 6 },
+      load15: { average: 15, maximum: 16 },
+    } as unknown as MinutePayload,
+  };
+}
+
+const history: HistoryResponse = {
+  fromUnix: 600,
+  toUnix: 720,
+  points: [minute(600, 10, 20, 1_024, 2_048), minute(720, 30, 50, 3_072, 4_096)],
+};
+
 const average: MetricChartSeries = {
   name: "平均",
   role: "primary",
-  data: [
-    [600_000, 10],
-    [660_000, null],
-    [720_000, 30],
-  ],
+  pairOrdinal: 0,
+  selector: (point) => point.payload.cpuUsage.average,
 };
 
 const maximum: MetricChartSeries = {
   name: "峰值",
   role: "maximum",
-  data: [
-    [600_000, 20],
-    [660_000, null],
-    [720_000, 50],
-  ],
+  pairOrdinal: 0,
+  selector: (point) => point.payload.cpuUsage.maximum,
 };
 
 beforeEach(() => {
@@ -104,6 +130,7 @@ describe("MetricChart", () => {
     const { rerender } = render(
       <MetricChart
         title="CPU 使用率"
+        history={history}
         series={[average, maximum]}
         formatter={metricChartFormatters.percent}
       />,
@@ -131,7 +158,12 @@ describe("MetricChart", () => {
     rerender(
       <MetricChart
         title="CPU 使用率"
-        series={[{ ...average, data: [...average.data, [780_000, 40]] }, maximum]}
+        history={{
+          fromUnix: 600,
+          toUnix: 780,
+          points: [...history.points, minute(780, 40, 60, 4_096, 5_120)],
+        }}
+        series={[average, maximum]}
         formatter={metricChartFormatters.percent}
       />,
     );
@@ -144,6 +176,7 @@ describe("MetricChart", () => {
     render(
       <MetricChart
         title="CPU 使用率"
+        history={history}
         series={[average, maximum]}
         formatter={metricChartFormatters.percent}
       />,
@@ -156,31 +189,38 @@ describe("MetricChart", () => {
     expect(
       screen.getByRole("img", { name: "CPU 使用率趋势图" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("group", { name: "CPU 使用率各序列当前值" }),
-    ).toHaveTextContent("平均30.0%");
+    const stats = screen.getByRole("table", { name: "CPU 使用率各序列统计" });
+    expect(stats).toHaveTextContent("序列当前平均最大");
+    expect(screen.getByRole("row", { name: "平均 30.0% 20.0% 30.0%" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "峰值 50.0% 35.0% 50.0%" }))
+      .toBeInTheDocument();
   });
 
   it("shows a missing current value for a trailing gap and exposes every series in text", () => {
     render(
       <MetricChart
         title="网络速率"
+        history={{
+          fromUnix: 600,
+          toUnix: 660,
+          points: [
+            minute(600, 0, 0, 1_024, 2_048),
+            minute(660, 0, 0, Number.NaN, 4_096),
+          ],
+        }}
         series={[
           {
             name: "上传",
             role: "primary",
-            data: [
-              [600_000, 1_024],
-              [660_000, null],
-            ],
+            pairOrdinal: 0,
+            selector: (point) => point.payload.uploadBps.average,
           },
           {
             name: "下载",
             role: "context",
-            data: [
-              [600_000, 2_048],
-              [660_000, 4_096],
-            ],
+            pairOrdinal: 1,
+            selector: (point) => point.payload.downloadBps.average,
           },
         ]}
         formatter={metricChartFormatters.rate}
@@ -190,11 +230,53 @@ describe("MetricChart", () => {
     expect(
       screen.getByRole("group", { name: "网络速率摘要" }),
     ).toHaveTextContent("当前—");
-    const seriesValues = screen.getByRole("group", {
-      name: "网络速率各序列当前值",
+    expect(screen.getByRole("row", { name: "上传 — 1.00 KiB/s 1.00 KiB/s" }))
+      .toBeInTheDocument();
+    expect(
+      screen.getByRole("row", {
+        name: "下载 4.00 KiB/s 3.00 KiB/s 4.00 KiB/s",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("styles all six load lines by explicit logical pair identity", () => {
+    const loadSeries: MetricChartSeries[] = [
+      { name: "Load 1", role: "primary", pairOrdinal: 0, selector: (p) => p.payload.load1.average },
+      { name: "Load 1 峰值", role: "maximum", pairOrdinal: 0, selector: (p) => p.payload.load1.maximum },
+      { name: "Load 5", role: "context", pairOrdinal: 1, selector: (p) => p.payload.load5.average },
+      { name: "Load 5 峰值", role: "context-maximum", pairOrdinal: 1, selector: (p) => p.payload.load5.maximum },
+      { name: "Load 15", role: "context", pairOrdinal: 2, selector: (p) => p.payload.load15.average },
+      { name: "Load 15 峰值", role: "context-maximum", pairOrdinal: 2, selector: (p) => p.payload.load15.maximum },
+    ];
+    render(
+      <MetricChart
+        title="系统负载"
+        history={history}
+        series={loadSeries}
+        formatter={metricChartFormatters.load}
+      />,
+    );
+
+    const option = chart.setOption.mock.calls[0]?.[0] as {
+      series: Array<{
+        name: string;
+        lineStyle: { color: string; type: string };
+      }>;
+    };
+    const identities = Object.fromEntries(
+      option.series.map((line) => [line.name, line.lineStyle]),
+    );
+    expect(identities).toEqual({
+      "Load 1": expect.objectContaining({ color: "#8a3158", type: "solid" }),
+      "Load 1 峰值": expect.objectContaining({ color: "#c07b94", type: "dashed" }),
+      "Load 5": expect.objectContaining({ color: "#486a78", type: "solid" }),
+      "Load 5 峰值": expect.objectContaining({ color: "#6f8f9b", type: "dashed" }),
+      "Load 15": expect.objectContaining({ color: "#6d5c7d", type: "solid" }),
+      "Load 15 峰值": expect.objectContaining({ color: "#89769a", type: "dashed" }),
     });
-    expect(seriesValues).toHaveTextContent("上传—");
-    expect(seriesValues).toHaveTextContent("下载4.00 KiB/s");
+    expect(
+      option.series.every((line) => contrastOnWhite(line.lineStyle.color) >= 3),
+    ).toBe(true);
   });
 
   it("disables chart animation when reduced motion is preferred", () => {
@@ -203,6 +285,7 @@ describe("MetricChart", () => {
     render(
       <MetricChart
         title="CPU 使用率"
+        history={history}
         series={[average]}
         formatter={metricChartFormatters.percent}
       />,
@@ -218,14 +301,16 @@ describe("MetricChart", () => {
     const { unmount } = render(
       <MetricChart
         title="CPU 使用率"
+        history={history}
         series={[average]}
         formatter={metricChartFormatters.percent}
       />,
     );
 
     expect(TestResizeObserver.instance?.observe).toHaveBeenCalledTimes(1);
-    act(() => TestResizeObserver.instance?.emit());
+    act(() => TestResizeObserver.instance?.emit(390));
     expect(chart.resize).toHaveBeenCalledTimes(1);
+    expect(chart.setOption).toHaveBeenCalledTimes(2);
 
     unmount();
     expect(TestResizeObserver.instance?.disconnect).toHaveBeenCalledTimes(1);
@@ -237,6 +322,7 @@ describe("MetricChart", () => {
     const { unmount } = render(
       <MetricChart
         title="CPU 使用率"
+        history={history}
         series={[average]}
         formatter={metricChartFormatters.percent}
       />,

@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useState, type MouseEvent } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 
 import { api, apiErrorMessage } from "../api/client";
 import type { ServerSnapshot } from "../api/types";
@@ -30,6 +38,55 @@ interface ServerDetailPageProps {
 interface FactProps {
   label: string;
   value: string;
+}
+
+interface HistoricalChartErrorBoundaryProps {
+  children: ReactNode;
+  reload?: () => void;
+}
+
+interface HistoricalChartErrorBoundaryState {
+  failed: boolean;
+}
+
+export class HistoricalChartErrorBoundary extends Component<
+  HistoricalChartErrorBoundaryProps,
+  HistoricalChartErrorBoundaryState
+> {
+  state: HistoricalChartErrorBoundaryState = { failed: false };
+
+  static getDerivedStateFromError(): HistoricalChartErrorBoundaryState {
+    return { failed: true };
+  }
+
+  private reload = () => {
+    if (this.props.reload) {
+      this.props.reload();
+      return;
+    }
+    window.location.reload();
+  };
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="history-error" role="alert">
+          <div>
+            <strong>历史图表加载失败</strong>
+            <p>图表资源没有加载完成。重新加载页面后可以再次尝试。</p>
+          </div>
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={this.reload}
+          >
+            重新加载页面
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function Fact({ label, value }: FactProps) {
@@ -418,9 +475,11 @@ export function ServerDetailPage({
             </button>
           </div>
         ) : history.data && history.data.points.length > 0 ? (
-          <Suspense fallback={<HistoryChartFallback />}>
-            <HistoricalMetrics history={history.data} />
-          </Suspense>
+          <HistoricalChartErrorBoundary key={`${serverId}:${range}`}>
+            <Suspense fallback={<HistoryChartFallback />}>
+              <HistoricalMetrics history={history.data} />
+            </Suspense>
+          </HistoricalChartErrorBoundary>
         ) : (
           <div className="history-empty" role="status">
             <strong>这个时间范围内还没有历史数据</strong>

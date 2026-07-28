@@ -5,6 +5,7 @@ import type { HistoryResponse, MinuteRecord, Range } from "./types";
 
 const CACHE_TTL_MS = 60_000;
 const HISTORY_ERROR = "暂时无法获取历史指标，请稍后重试。";
+export const MAX_HISTORY_SPAN_SECONDS = 30 * 24 * 60 * 60;
 
 type MinuteValue = [timestampMs: number, value: number | null];
 
@@ -38,11 +39,42 @@ function cachedHistory(key: string): HistoryResponse | null {
   if (!entry) {
     return null;
   }
-  if (Date.now() - entry.cachedAt >= CACHE_TTL_MS) {
+  const age = Date.now() - entry.cachedAt;
+  if (age < 0 || age >= CACHE_TTL_MS) {
     historyCache.delete(key);
     return null;
   }
   return entry.data;
+}
+
+export function isValidHistoryRange(fromUnix: number, toUnix: number): boolean {
+  return (
+    Number.isSafeInteger(fromUnix) &&
+    Number.isSafeInteger(toUnix) &&
+    Number.isSafeInteger(fromUnix * 1_000) &&
+    Number.isSafeInteger(toUnix * 1_000) &&
+    fromUnix % 60 === 0 &&
+    toUnix % 60 === 0 &&
+    fromUnix <= toUnix &&
+    toUnix - fromUnix <= MAX_HISTORY_SPAN_SECONDS
+  );
+}
+
+function isHistoryResponse(value: unknown): value is HistoryResponse {
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as {
+    fromUnix?: unknown;
+    toUnix?: unknown;
+    points?: unknown;
+  };
+  return (
+    typeof candidate.fromUnix === "number" &&
+    typeof candidate.toUnix === "number" &&
+    isValidHistoryRange(candidate.fromUnix, candidate.toUnix) &&
+    Array.isArray(candidate.points)
+  );
 }
 
 export function buildMinuteSeries(
@@ -51,30 +83,36 @@ export function buildMinuteSeries(
   toUnix: number,
   selector: (point: MinuteRecord) => number | null,
 ): MinuteValue[] {
-  if (!Number.isFinite(fromUnix) || !Number.isFinite(toUnix)) {
-    return [];
-  }
-  const firstMinute = Math.floor(fromUnix / 60) * 60;
-  const lastMinute = Math.floor(toUnix / 60) * 60;
-  if (lastMinute < firstMinute) {
+  if (!isValidHistoryRange(fromUnix, toUnix)) {
     return [];
   }
 
   const byMinute = new Map<number, MinuteRecord>();
   for (const point of points) {
-    if (point.minuteUnix < fromUnix || point.minuteUnix > toUnix) {
+    if (
+      !Number.isSafeInteger(point.minuteUnix) ||
+      point.minuteUnix % 60 !== 0 ||
+      point.minuteUnix < fromUnix ||
+      point.minuteUnix > toUnix
+    ) {
       continue;
     }
-    const minute = Math.floor(point.minuteUnix / 60) * 60;
-    if (minute >= firstMinute && minute <= lastMinute) {
-      byMinute.set(minute, point);
-    }
+    byMinute.set(point.minuteUnix, point);
   }
 
   const series: MinuteValue[] = [];
-  for (let minute = firstMinute; minute <= lastMinute; minute += 60) {
+  for (let minute = fromUnix; minute <= toUnix; minute += 60) {
     const point = byMinute.get(minute);
-    series.push([minute * 1_000, point ? selector(point) : null]);
+    let value: number | null = null;
+    if (point) {
+      try {
+        const selected = selector(point);
+        value = selected !== null && Number.isFinite(selected) ? selected : null;
+      } catch {
+        value = null;
+      }
+    }
+    series.push([minute * 1_000, value]);
   }
   return series;
 }
@@ -110,17 +148,21 @@ export function useHistory(
 
     const controller = new AbortController();
     setState({ key, loading: true, error: null, data: null });
-    request<HistoryResponse>(
+    request<unknown>(
       `/api/servers/${serverID}/history?range=${range}`,
       { signal: controller.signal },
     )
-      .then((data) => {
+      .then((value) => {
         if (
           controller.signal.aborted ||
           generation !== generationRef.current
         ) {
           return;
         }
+        if (!isHistoryResponse(value)) {
+          throw new Error("invalid history response");
+        }
+        const data = value;
         historyCache.set(key, { cachedAt: Date.now(), data });
         setState({ key, loading: false, error: null, data });
       })

@@ -4,62 +4,44 @@ import {
   type MetricChartSeries,
 } from "../components/MetricChart";
 import type { HistoryResponse, Pair } from "./types";
-import { buildMinuteSeries } from "./useHistory";
 
 function pairSeries(
-  history: HistoryResponse,
   selector: (point: HistoryResponse["points"][number]) => Pair | null,
 ): MetricChartSeries[] {
   return [
     {
       name: "平均",
       role: "primary",
-      data: buildMinuteSeries(
-        history.points,
-        history.fromUnix,
-        history.toUnix,
-        (point) => selector(point)?.average ?? null,
-      ),
+      pairOrdinal: 0,
+      selector: (point) => selector(point)?.average ?? null,
     },
     {
       name: "峰值",
       role: "maximum",
-      data: buildMinuteSeries(
-        history.points,
-        history.fromUnix,
-        history.toUnix,
-        (point) => selector(point)?.maximum ?? null,
-      ),
+      pairOrdinal: 0,
+      selector: (point) => selector(point)?.maximum ?? null,
     },
   ];
 }
 
 function valueSeries(
-  history: HistoryResponse,
   lines: Array<{
     name: string;
-    role?: MetricChartSeries["role"];
+    role: MetricChartSeries["role"];
+    pairOrdinal: number;
     selector: (point: HistoryResponse["points"][number]) => number | null;
   }>,
 ): MetricChartSeries[] {
-  return lines.map((line) => ({
-    name: line.name,
-    role: line.role,
-    data: buildMinuteSeries(
-      history.points,
-      history.fromUnix,
-      history.toUnix,
-      line.selector,
-    ),
-  }));
+  return lines;
 }
 
 function diskPair(
   point: HistoryResponse["points"][number],
   mountpoint: string,
 ): Pair | null {
-  for (let index = point.payload.disks.length - 1; index >= 0; index -= 1) {
-    const disk = point.payload.disks[index];
+  const disks = Array.isArray(point.payload?.disks) ? point.payload.disks : [];
+  for (let index = disks.length - 1; index >= 0; index -= 1) {
+    const disk = disks[index];
     if (disk?.mountpoint === mountpoint) {
       return disk.usage;
     }
@@ -68,13 +50,18 @@ function diskPair(
 }
 
 export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
-  const mountpoints = Array.from(
-    new Set(
-      history.points.flatMap((point) =>
-        point.payload.disks.map((disk) => disk.mountpoint),
-      ),
-    ),
-  ).sort((left, right) => left.localeCompare(right));
+  const mountpointSet = new Set<string>();
+  for (const point of history.points) {
+    const disks = Array.isArray(point?.payload?.disks) ? point.payload.disks : [];
+    for (const disk of disks) {
+      if (typeof disk?.mountpoint === "string") {
+        mountpointSet.add(disk.mountpoint);
+      }
+    }
+  }
+  const mountpoints = [...mountpointSet].sort((left, right) =>
+    left.localeCompare(right),
+  );
 
   return (
     <div className="historical-metric-groups">
@@ -85,40 +72,48 @@ export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
         </div>
         <MetricChart
           title="CPU 使用率"
-          series={pairSeries(history, (point) => point.payload.cpuUsage)}
+          history={history}
+          series={pairSeries((point) => point.payload.cpuUsage)}
           formatter={metricChartFormatters.percent}
         />
         <MetricChart
           title="系统负载"
-          series={valueSeries(history, [
+          history={history}
+          series={valueSeries([
             {
               name: "Load 1",
               role: "primary",
+              pairOrdinal: 0,
               selector: (point) => point.payload.load1.average,
             },
             {
               name: "Load 1 峰值",
               role: "maximum",
+              pairOrdinal: 0,
               selector: (point) => point.payload.load1.maximum,
             },
             {
               name: "Load 5",
               role: "context",
+              pairOrdinal: 1,
               selector: (point) => point.payload.load5.average,
             },
             {
               name: "Load 5 峰值",
               role: "context-maximum",
+              pairOrdinal: 1,
               selector: (point) => point.payload.load5.maximum,
             },
             {
               name: "Load 15",
               role: "context",
+              pairOrdinal: 2,
               selector: (point) => point.payload.load15.average,
             },
             {
               name: "Load 15 峰值",
               role: "context-maximum",
+              pairOrdinal: 2,
               selector: (point) => point.payload.load15.maximum,
             },
           ])}
@@ -133,12 +128,14 @@ export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
         </div>
         <MetricChart
           title="内存使用率"
-          series={pairSeries(history, (point) => point.payload.memoryUsage)}
+          history={history}
+          series={pairSeries((point) => point.payload.memoryUsage)}
           formatter={metricChartFormatters.percent}
         />
         <MetricChart
           title="Swap 使用率"
-          series={pairSeries(history, (point) => point.payload.swapUsage)}
+          history={history}
+          series={pairSeries((point) => point.payload.swapUsage)}
           formatter={metricChartFormatters.percent}
         />
       </article>
@@ -153,7 +150,8 @@ export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
             <MetricChart
               key={mountpoint}
               title={`${mountpoint} 使用率`}
-              series={pairSeries(history, (point) => diskPair(point, mountpoint))}
+              history={history}
+              series={pairSeries((point) => diskPair(point, mountpoint))}
               formatter={metricChartFormatters.percent}
             />
           ))
@@ -162,25 +160,30 @@ export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
         )}
         <MetricChart
           title="磁盘 I/O"
-          series={valueSeries(history, [
+          history={history}
+          series={valueSeries([
             {
               name: "读取",
               role: "primary",
+              pairOrdinal: 0,
               selector: (point) => point.payload.diskReadBps.average,
             },
             {
               name: "读取峰值",
               role: "maximum",
+              pairOrdinal: 0,
               selector: (point) => point.payload.diskReadBps.maximum,
             },
             {
               name: "写入",
               role: "context",
+              pairOrdinal: 1,
               selector: (point) => point.payload.diskWriteBps.average,
             },
             {
               name: "写入峰值",
               role: "context-maximum",
+              pairOrdinal: 1,
               selector: (point) => point.payload.diskWriteBps.maximum,
             },
           ])}
@@ -195,25 +198,30 @@ export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
         </div>
         <MetricChart
           title="网络速率"
-          series={valueSeries(history, [
+          history={history}
+          series={valueSeries([
             {
               name: "上传",
               role: "primary",
+              pairOrdinal: 0,
               selector: (point) => point.payload.uploadBps.average,
             },
             {
               name: "上传峰值",
               role: "maximum",
+              pairOrdinal: 0,
               selector: (point) => point.payload.uploadBps.maximum,
             },
             {
               name: "下载",
               role: "context",
+              pairOrdinal: 1,
               selector: (point) => point.payload.downloadBps.average,
             },
             {
               name: "下载峰值",
               role: "context-maximum",
+              pairOrdinal: 1,
               selector: (point) => point.payload.downloadBps.maximum,
             },
           ])}
@@ -221,15 +229,18 @@ export function HistoricalMetrics({ history }: { history: HistoryResponse }) {
         />
         <MetricChart
           title="累计网络流量"
-          series={valueSeries(history, [
+          history={history}
+          series={valueSeries([
             {
               name: "累计上传",
               role: "primary",
+              pairOrdinal: 0,
               selector: (point) => point.payload.totalUpload,
             },
             {
               name: "累计下载",
               role: "context",
+              pairOrdinal: 1,
               selector: (point) => point.payload.totalDownload,
             },
           ])}
