@@ -2,6 +2,7 @@ package history
 
 import (
 	"sort"
+	"time"
 
 	"probe.local/monitor/internal/protocol"
 )
@@ -31,28 +32,40 @@ func (n numeric) pair() Pair {
 }
 
 type diskAccumulator struct {
-	Usage      numeric
-	TotalBytes uint64
-	UsedBytes  uint64
+	Usage             numeric
+	TotalBytes        uint64
+	UsedBytes         uint64
+	lastReceivedAt    time.Time
+	hasLastReceivedAt bool
 }
 
 type Accumulator struct {
-	cpuUsage      numeric
-	load1         numeric
-	load5         numeric
-	load15        numeric
-	memoryUsage   numeric
-	swapUsage     numeric
-	disks         map[string]*diskAccumulator
-	diskReadBPS   numeric
-	diskWriteBPS  numeric
-	uploadBPS     numeric
-	downloadBPS   numeric
-	totalUpload   uint64
-	totalDownload uint64
+	cpuUsage                numeric
+	load1                   numeric
+	load5                   numeric
+	load15                  numeric
+	memoryUsage             numeric
+	swapUsage               numeric
+	disks                   map[string]*diskAccumulator
+	diskReadBPS             numeric
+	diskWriteBPS            numeric
+	uploadBPS               numeric
+	downloadBPS             numeric
+	totalUpload             uint64
+	totalDownload           uint64
+	lastTotalsReceivedAt    time.Time
+	hasLastTotalsReceivedAt bool
 }
 
 func (a *Accumulator) Add(report protocol.AgentReport) {
+	a.add(report, time.Time{}, false)
+}
+
+func (a *Accumulator) addAt(report protocol.AgentReport, receivedAt time.Time) {
+	a.add(report, receivedAt, true)
+}
+
+func (a *Accumulator) add(report protocol.AgentReport, receivedAt time.Time, ordered bool) {
 	a.cpuUsage.add(report.CPU.UsagePercent)
 	a.load1.add(report.CPU.Load1)
 	a.load5.add(report.CPU.Load5)
@@ -63,23 +76,35 @@ func (a *Accumulator) Add(report protocol.AgentReport) {
 	if a.disks == nil {
 		a.disks = make(map[string]*diskAccumulator)
 	}
+	disks := make(map[string]protocol.DiskStats, len(report.Disks))
 	for _, disk := range report.Disks {
+		disks[disk.Mountpoint] = disk
+	}
+	for _, disk := range disks {
 		entry := a.disks[disk.Mountpoint]
 		if entry == nil {
 			entry = &diskAccumulator{}
 			a.disks[disk.Mountpoint] = entry
 		}
 		entry.Usage.add(usagePercent(disk.UsedBytes, disk.TotalBytes))
-		entry.TotalBytes = disk.TotalBytes
-		entry.UsedBytes = disk.UsedBytes
+		if !ordered || !entry.hasLastReceivedAt || !receivedAt.Before(entry.lastReceivedAt) {
+			entry.TotalBytes = disk.TotalBytes
+			entry.UsedBytes = disk.UsedBytes
+			entry.lastReceivedAt = receivedAt
+			entry.hasLastReceivedAt = ordered
+		}
 	}
 
 	a.diskReadBPS.add(float64(report.DiskIO.ReadBytesPerSecond))
 	a.diskWriteBPS.add(float64(report.DiskIO.WriteBytesPerSecond))
 	a.uploadBPS.add(float64(report.Network.UploadBytesPerSecond))
 	a.downloadBPS.add(float64(report.Network.DownloadBytesPerSecond))
-	a.totalUpload = report.Network.TotalUploadBytes
-	a.totalDownload = report.Network.TotalDownloadBytes
+	if !ordered || !a.hasLastTotalsReceivedAt || !receivedAt.Before(a.lastTotalsReceivedAt) {
+		a.totalUpload = report.Network.TotalUploadBytes
+		a.totalDownload = report.Network.TotalDownloadBytes
+		a.lastTotalsReceivedAt = receivedAt
+		a.hasLastTotalsReceivedAt = ordered
+	}
 }
 
 func (a *Accumulator) Finish(serverID, minuteUnix int64) MinuteRecord {

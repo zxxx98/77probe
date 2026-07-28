@@ -21,10 +21,10 @@ type bucketKey struct {
 type bucket struct {
 	accumulator Accumulator
 	revision    uint64
-	flushing    bool
 }
 
 type Aggregator struct {
+	flushMu sync.Mutex
 	mu      sync.Mutex
 	writer  Writer
 	buckets map[bucketKey]*bucket
@@ -51,11 +51,14 @@ func (a *Aggregator) Accept(serverID int64, report protocol.AgentReport, receive
 		entry = &bucket{}
 		a.buckets[key] = entry
 	}
-	entry.accumulator.Add(report)
+	entry.accumulator.addAt(report, receivedAt)
 	entry.revision++
 }
 
 func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
+	a.flushMu.Lock()
+	defer a.flushMu.Unlock()
+
 	type candidate struct {
 		key      bucketKey
 		revision uint64
@@ -64,8 +67,8 @@ func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 
 	a.mu.Lock()
 	keys := make([]bucketKey, 0, len(a.buckets))
-	for key, entry := range a.buckets {
-		if !entry.flushing && time.Unix(key.MinuteUnix, 0).Before(minute) {
+	for key := range a.buckets {
+		if time.Unix(key.MinuteUnix, 0).Before(minute) {
 			keys = append(keys, key)
 		}
 	}
@@ -79,7 +82,6 @@ func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 	candidates := make([]candidate, 0, len(keys))
 	for _, key := range keys {
 		entry := a.buckets[key]
-		entry.flushing = true
 		candidates = append(candidates, candidate{
 			key:      key,
 			revision: entry.revision,
@@ -96,8 +98,6 @@ func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 		entry := a.buckets[candidate.key]
 		if err == nil && entry.revision == candidate.revision {
 			delete(a.buckets, candidate.key)
-		} else {
-			entry.flushing = false
 		}
 		a.mu.Unlock()
 

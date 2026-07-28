@@ -128,3 +128,32 @@ func TestAccumulatorAggregatesMinutePayload(t *testing.T) {
 		t.Fatalf("Finish() =\n%+v\nwant:\n%+v", got, want)
 	}
 }
+
+func TestAccumulatorDuplicateMountpointLastOccurrenceWins(t *testing.T) {
+	var accumulator Accumulator
+	accumulator.Add(protocol.AgentReport{
+		Disks: []protocol.DiskStats{
+			{Mountpoint: "/", TotalBytes: 100, UsedBytes: 10},
+			{Mountpoint: "/", TotalBytes: 200, UsedBytes: 100},
+		},
+	})
+
+	entry := accumulator.disks["/"]
+	if entry == nil {
+		t.Fatal("missing disk accumulator")
+	}
+	if got := entry.Usage.Count; got != 1 {
+		t.Fatalf("disk usage sample count = %d, want 1", got)
+	}
+
+	record := accumulator.Finish(7, 100)
+	want := []DiskMinute{{
+		Mountpoint: "/",
+		Usage:      Pair{Average: 50, Maximum: 50},
+		TotalBytes: 200,
+		UsedBytes:  100,
+	}}
+	if !reflect.DeepEqual(record.Payload.Disks, want) {
+		t.Fatalf("disks = %+v, want %+v", record.Payload.Disks, want)
+	}
+}

@@ -147,6 +147,124 @@ func TestAggregatorAcceptDuringFlushIsNotBlockedOrLost(t *testing.T) {
 	}
 }
 
+func TestAggregatorSerializesFlushBeforeCalls(t *testing.T) {
+	writer := newConcurrencyWriter()
+	aggregator := NewAggregator(writer)
+	minute := time.Date(2026, time.July, 28, 1, 2, 0, 0, time.UTC)
+	aggregator.Accept(1, protocol.AgentReport{}, minute)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- aggregator.FlushBefore(context.Background(), minute.Add(time.Minute))
+	}()
+	<-writer.firstStarted
+
+	aggregator.Accept(2, protocol.AgentReport{}, minute)
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondEntered)
+		secondDone <- aggregator.FlushBefore(context.Background(), minute.Add(time.Minute))
+	}()
+	<-secondEntered
+
+	select {
+	case err := <-secondDone:
+		close(writer.releaseFirst)
+		firstErr := <-firstDone
+		t.Fatalf("second FlushBefore returned while first was blocked: second error %v, first error %v", err, firstErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(writer.releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first FlushBefore() error = %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second FlushBefore() error = %v", err)
+	}
+	if got := writer.maximumConcurrency(); got != 1 {
+		t.Fatalf("writer maximum concurrency = %d, want 1", got)
+	}
+	assertWrittenKeys(t, writer.snapshot(), []writtenKey{
+		{ServerID: 1, MinuteUnix: minute.Unix()},
+		{ServerID: 2, MinuteUnix: minute.Unix()},
+	})
+}
+
+func TestAggregatorLastValuesUseLatestReceivedAt(t *testing.T) {
+	writer := &recordingWriter{}
+	aggregator := NewAggregator(writer)
+	minute := time.Date(2026, time.July, 28, 1, 2, 0, 0, time.UTC)
+
+	aggregator.Accept(7, protocol.AgentReport{
+		CPU: protocol.CPUStats{UsagePercent: 30},
+		Disks: []protocol.DiskStats{
+			{Mountpoint: "/shared", TotalBytes: 300, UsedBytes: 150},
+			{Mountpoint: "/newer", TotalBytes: 400, UsedBytes: 100},
+		},
+		Network: protocol.NetworkStats{
+			UploadBytesPerSecond:   300,
+			DownloadBytesPerSecond: 600,
+			TotalUploadBytes:       3000,
+			TotalDownloadBytes:     6000,
+		},
+	}, minute.Add(50*time.Second))
+	aggregator.Accept(7, protocol.AgentReport{
+		CPU: protocol.CPUStats{UsagePercent: 10},
+		Disks: []protocol.DiskStats{
+			{Mountpoint: "/shared", TotalBytes: 100, UsedBytes: 10},
+			{Mountpoint: "/older", TotalBytes: 200, UsedBytes: 100},
+		},
+		Network: protocol.NetworkStats{
+			UploadBytesPerSecond:   100,
+			DownloadBytesPerSecond: 200,
+			TotalUploadBytes:       1000,
+			TotalDownloadBytes:     2000,
+		},
+	}, minute.Add(10*time.Second))
+
+	if err := aggregator.FlushBefore(context.Background(), minute.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	records := writer.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("writes = %d, want 1", len(records))
+	}
+	record := records[0]
+
+	if got, want := record.Payload.CPUUsage, (Pair{Average: 20, Maximum: 30}); got != want {
+		t.Errorf("CPU usage = %+v, want %+v", got, want)
+	}
+	if got, want := record.Payload.UploadBPS, (Pair{Average: 200, Maximum: 300}); got != want {
+		t.Errorf("upload BPS = %+v, want %+v", got, want)
+	}
+	if got, want := record.Payload.TotalUpload, uint64(3000); got != want {
+		t.Errorf("total upload = %d, want %d", got, want)
+	}
+	if got, want := record.Payload.TotalDownload, uint64(6000); got != want {
+		t.Errorf("total download = %d, want %d", got, want)
+	}
+	assertDiskMinute(t, record.Payload.Disks, DiskMinute{
+		Mountpoint: "/shared",
+		Usage:      Pair{Average: 30, Maximum: 50},
+		TotalBytes: 300,
+		UsedBytes:  150,
+	})
+	assertDiskMinute(t, record.Payload.Disks, DiskMinute{
+		Mountpoint: "/newer",
+		Usage:      Pair{Average: 25, Maximum: 25},
+		TotalBytes: 400,
+		UsedBytes:  100,
+	})
+	assertDiskMinute(t, record.Payload.Disks, DiskMinute{
+		Mountpoint: "/older",
+		Usage:      Pair{Average: 50, Maximum: 50},
+		TotalBytes: 200,
+		UsedBytes:  100,
+	})
+}
+
 type recordingWriter struct {
 	mu      sync.Mutex
 	records []MinuteRecord
@@ -204,6 +322,59 @@ func (w *blockingWriter) snapshot() []MinuteRecord {
 	return append([]MinuteRecord(nil), w.records...)
 }
 
+type concurrencyWriter struct {
+	mu           sync.Mutex
+	records      []MinuteRecord
+	active       int
+	maxActive    int
+	calls        int
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+}
+
+func newConcurrencyWriter() *concurrencyWriter {
+	return &concurrencyWriter{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+}
+
+func (w *concurrencyWriter) UpsertMinute(_ context.Context, record MinuteRecord) error {
+	w.mu.Lock()
+	w.calls++
+	call := w.calls
+	w.active++
+	if w.active > w.maxActive {
+		w.maxActive = w.active
+	}
+	w.records = append(w.records, record)
+	if call == 1 {
+		close(w.firstStarted)
+	}
+	w.mu.Unlock()
+
+	if call == 1 {
+		<-w.releaseFirst
+	}
+
+	w.mu.Lock()
+	w.active--
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *concurrencyWriter) maximumConcurrency() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxActive
+}
+
+func (w *concurrencyWriter) snapshot() []MinuteRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]MinuteRecord(nil), w.records...)
+}
+
 type writtenKey struct {
 	ServerID   int64
 	MinuteUnix int64
@@ -218,4 +389,17 @@ func assertWrittenKeys(t *testing.T, records []MinuteRecord, want []writtenKey) 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("written keys = %+v, want %+v", got, want)
 	}
+}
+
+func assertDiskMinute(t *testing.T, disks []DiskMinute, want DiskMinute) {
+	t.Helper()
+	for _, disk := range disks {
+		if disk.Mountpoint == want.Mountpoint {
+			if disk != want {
+				t.Errorf("disk %q = %+v, want %+v", want.Mountpoint, disk, want)
+			}
+			return
+		}
+	}
+	t.Errorf("disk %q not found in %+v", want.Mountpoint, disks)
 }
