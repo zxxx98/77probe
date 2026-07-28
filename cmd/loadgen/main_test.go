@@ -226,6 +226,60 @@ func TestBatchRunErrorPreservesServerErrorAfterDeadline(t *testing.T) {
 	}
 }
 
+func TestRunPreservesFlushedNon2xxStatusWhenDurationInterruptsBody(t *testing.T) {
+	flushed := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("partial outage"))
+		w.(http.Flusher).Flush()
+		close(flushed)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	tokenFile := filepath.Join(t.TempDir(), "tokens.txt")
+	if err := os.WriteFile(tokenFile, []byte("tp_one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(context.Background(), config{
+			baseURL:   server.URL,
+			tokenFile: tokenFile,
+			agents:    1,
+			duration:  75 * time.Millisecond,
+			interval:  100 * time.Millisecond,
+			allowFast: true,
+		})
+	}()
+
+	select {
+	case <-flushed:
+	case err := <-done:
+		t.Fatalf("run() finished before 503 headers were flushed: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("503 headers were not flushed")
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "503 Service Unavailable") || !strings.Contains(err.Error(), "partial outage") {
+			t.Fatalf("run() error = %v, want 503 status with partial body", err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("run() error wraps configured deadline: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run() did not stop at configured duration")
+	}
+}
+
 func TestLoadTokensSelectsRequestedNonEmptyTokens(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.txt")
 	if err := os.WriteFile(path, []byte("tp_one\n\n tp_two \ntp_three\n"), 0o600); err != nil {

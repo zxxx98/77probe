@@ -162,14 +162,24 @@ func sendBatch(ctx context.Context, client *http.Client, baseURL string, tokens 
 		}
 		responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
 		closeErr := response.Body.Close()
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			details := make([]string, 0, 3)
+			if body := strings.TrimSpace(string(responseBody)); body != "" {
+				details = append(details, body)
+			}
+			if readErr != nil {
+				details = append(details, fmt.Sprintf("response body read interrupted: %v", readErr))
+			}
+			if closeErr != nil {
+				details = append(details, fmt.Sprintf("response body close interrupted: %v", closeErr))
+			}
+			return fmt.Errorf("agent %d report returned %s: %s", index+1, response.Status, strings.Join(details, "; "))
+		}
 		if readErr != nil {
 			return fmt.Errorf("agent %d response: %w", index+1, readErr)
 		}
 		if closeErr != nil {
 			return fmt.Errorf("agent %d response close: %w", index+1, closeErr)
-		}
-		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return fmt.Errorf("agent %d report returned %s: %s", index+1, response.Status, strings.TrimSpace(string(responseBody)))
 		}
 	}
 	return nil
