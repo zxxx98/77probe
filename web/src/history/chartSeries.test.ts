@@ -25,6 +25,110 @@ function record(
 }
 
 describe("prepareChartSeries", () => {
+  it("preserves every separated gap run inside one downsampling bucket", () => {
+    const minuteCount = 1_000;
+    const gapIndices = new Set([5, 6, 10, 11]);
+    const points: MinuteRecord[] = [];
+    for (let index = 0; index < minuteCount; index += 1) {
+      if (gapIndices.has(index)) {
+        continue;
+      }
+      points.push(record(index * 60, index, index + 10, index));
+    }
+    const definitions: MetricSeriesDefinition[] = [
+      {
+        name: "CPU 平均",
+        role: "primary",
+        pairOrdinal: 0,
+        selector: (point) => point.payload.cpuUsage.average,
+      },
+      {
+        name: "Load 5",
+        role: "context",
+        pairOrdinal: 1,
+        selector: (point) => point.payload.load5.average,
+      },
+    ];
+
+    const prepared = prepareChartSeries(
+      {
+        fromUnix: 0,
+        toUnix: (minuteCount - 1) * 60,
+        points,
+      },
+      definitions,
+      80,
+    );
+
+    expect(prepared.minuteCount).toBeGreaterThan(prepared.pointBudget);
+    for (const series of prepared.series) {
+      expect(
+        series.data
+          .filter(([, value]) => value === null)
+          .map(([timestamp]) => timestamp),
+      ).toEqual([5 * 60_000, 10 * 60_000]);
+      expect(series.data).toContainEqual([0, 0]);
+      expect(series.data).toContainEqual([7 * 60_000, 7]);
+      expect(series.data).toContainEqual([12 * 60_000, 12]);
+      expect(series.data).toContainEqual([
+        (minuteCount - 1) * 60_000,
+        minuteCount - 1,
+      ]);
+      const timestamps = series.data.map(([timestamp]) => timestamp);
+      expect(timestamps.indexOf(5 * 60_000)).toBeLessThan(
+        timestamps.indexOf(7 * 60_000),
+      );
+      expect(timestamps.indexOf(7 * 60_000)).toBeLessThan(
+        timestamps.indexOf(10 * 60_000),
+      );
+    }
+  });
+
+  it("adds exact gap breaks to the finite sampling budget on pathological history", () => {
+    const fromUnix = 0;
+    const toUnix = 30 * 24 * 60 * 60;
+    const minuteCount = toUnix / 60 + 1;
+    const alternatingGapStart = 10_000;
+    const alternatingGapMinutes = 240;
+    const gapRunCount = alternatingGapMinutes / 2;
+    const points: MinuteRecord[] = [];
+    for (let index = 0; index < minuteCount; index += 1) {
+      const inAlternatingGaps =
+        index >= alternatingGapStart &&
+        index < alternatingGapStart + alternatingGapMinutes &&
+        (index - alternatingGapStart) % 2 === 1;
+      if (!inAlternatingGaps) {
+        points.push(record(index * 60, index % 100, index % 100, index % 7));
+      }
+    }
+
+    const prepared = prepareChartSeries(
+      { fromUnix, toUnix, points },
+      [
+        {
+          name: "CPU 平均",
+          role: "primary",
+          pairOrdinal: 0,
+          selector: (point) => point.payload.cpuUsage.average,
+        },
+      ],
+      800,
+    );
+    const data = prepared.series[0]!.data;
+    const timestamps = new Set(data.map(([timestamp]) => timestamp));
+
+    expect(data.filter(([, value]) => value === null)).toHaveLength(gapRunCount);
+    for (let offset = 1; offset < alternatingGapMinutes; offset += 2) {
+      expect(timestamps).toContain((alternatingGapStart + offset) * 60_000);
+      expect(timestamps).toContain((alternatingGapStart + offset + 1) * 60_000);
+    }
+    expect(data.length).toBeLessThanOrEqual(
+      prepared.pointBudget + gapRunCount * 2,
+    );
+    expect(data.length).toBeLessThan(3_000);
+    expect(data.length).toBeLessThan(minuteCount / 10);
+  });
+
   it("bounds a full 30-day chart while preserving peaks, gaps, endpoints, order, and stats", () => {
     const fromUnix = 0;
     const toUnix = 30 * 24 * 60 * 60;
@@ -157,7 +261,7 @@ describe("prepareChartSeries", () => {
       [720_000, null],
     ]);
     expect(prepared.series[0]?.stats).toEqual({
-      current: null,
+      current: 10,
       average: 10,
       maximum: 10,
     });

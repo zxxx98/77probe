@@ -15,6 +15,7 @@ export interface MetricSeriesDefinition {
 }
 
 export interface MetricSeriesStats {
+  /** Most recent finite completed-minute value in the selected range. */
   current: number | null;
   average: number | null;
   maximum: number | null;
@@ -45,7 +46,7 @@ const MIN_POINT_BUDGET = 160;
 const MAX_POINT_BUDGET = 1_600;
 const DEFAULT_CHART_WIDTH = 640;
 const POINTS_PER_PIXEL = 2;
-const CANDIDATES_PER_BUCKET = 5;
+const FINITE_CANDIDATES_PER_BUCKET = 4;
 
 const alignedIndexCache = new WeakMap<
   HistoryResponse,
@@ -132,7 +133,6 @@ interface BucketAccumulator {
   minimumValue: number;
   maximumIndex: number | null;
   maximumValue: number;
-  gap: number | null;
 }
 
 function newBucketAccumulator(): BucketAccumulator {
@@ -143,7 +143,6 @@ function newBucketAccumulator(): BucketAccumulator {
     minimumValue: Number.POSITIVE_INFINITY,
     maximumIndex: null,
     maximumValue: Number.NEGATIVE_INFINITY,
-    gap: null,
   };
 }
 
@@ -156,7 +155,6 @@ function addBucketCandidates(
     bucket.last,
     bucket.minimumIndex,
     bucket.maximumIndex,
-    bucket.gap,
   ]) {
     if (index !== null) {
       candidates.add(index);
@@ -165,10 +163,12 @@ function addBucketCandidates(
 }
 
 /**
- * Produces no more than `chartPointBudget(width)` points per series.
- * Downsampled buckets retain first/last finite values, min, max, and one null
- * break. Global first/last timestamps are always retained, so with
- * B=floor((P-2)/5), the hard bound is 5B+2 <= P.
+ * Downsampled buckets retain first/last finite values plus min/max within the
+ * width-derived finite-sample budget. Every distinct null run adds its first
+ * null plus, when present, the first following finite sample so separate gaps
+ * stay visually separate. With P=`chartPointBudget(width)`, G=gap-run count,
+ * and B=floor((P-2)/4), the per-series bound is 4B+2+2G <= P+2G. Exact
+ * arbitrary gaps therefore cannot honestly have a strict P-point bound.
  */
 export function prepareChartSeries(
   history: HistoryResponse,
@@ -189,6 +189,7 @@ export function prepareChartSeries(
     maximum: null,
     current: null,
   }));
+  const gapsOpen = definitions.map(() => false);
 
   if (minuteCount <= pointBudget) {
     for (const selected of candidates) {
@@ -203,7 +204,7 @@ export function prepareChartSeries(
       ? 1
       : Math.max(
           1,
-          Math.floor((pointBudget - 2) / CANDIDATES_PER_BUCKET),
+          Math.floor((pointBudget - 2) / FINITE_CANDIDATES_PER_BUCKET),
         );
   const bucketSize = Math.ceil(minuteCount / bucketCount);
 
@@ -218,14 +219,19 @@ export function prepareChartSeries(
         const definition = definitions[seriesIndex]!;
         const value = selectedValue(definition, point);
         const aggregate = stats[seriesIndex]!;
-        if (index === minuteCount - 1) {
-          aggregate.current = value;
-        }
         const bucket = buckets[seriesIndex]!;
         if (value === null) {
-          bucket.gap ??= index;
+          if (!gapsOpen[seriesIndex]) {
+            candidates[seriesIndex]!.add(index);
+            gapsOpen[seriesIndex] = true;
+          }
           continue;
         }
+        if (gapsOpen[seriesIndex]) {
+          candidates[seriesIndex]!.add(index);
+        }
+        gapsOpen[seriesIndex] = false;
+        aggregate.current = value;
 
         aggregate.sum += value;
         aggregate.count += 1;

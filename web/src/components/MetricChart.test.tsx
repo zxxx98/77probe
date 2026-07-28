@@ -172,7 +172,7 @@ describe("MetricChart", () => {
     expect(chart.setOption).toHaveBeenCalledTimes(2);
   });
 
-  it("provides an adjacent accessible current, average, and maximum summary", () => {
+  it("provides an adjacent accessible recent, average, and maximum summary", () => {
     render(
       <MetricChart
         title="CPU 使用率"
@@ -183,21 +183,21 @@ describe("MetricChart", () => {
     );
 
     const summary = screen.getByRole("group", { name: "CPU 使用率摘要" });
-    expect(summary).toHaveTextContent("当前30.0%");
+    expect(summary).toHaveTextContent("最近值30.0%");
     expect(summary).toHaveTextContent("平均20.0%");
     expect(summary).toHaveTextContent("最大50.0%");
     expect(
       screen.getByRole("img", { name: "CPU 使用率趋势图" }),
     ).toBeInTheDocument();
     const stats = screen.getByRole("table", { name: "CPU 使用率各序列统计" });
-    expect(stats).toHaveTextContent("序列当前平均最大");
+    expect(stats).toHaveTextContent("序列最近值平均最大");
     expect(screen.getByRole("row", { name: "平均 30.0% 20.0% 30.0%" }))
       .toBeInTheDocument();
     expect(screen.getByRole("row", { name: "峰值 50.0% 35.0% 50.0%" }))
       .toBeInTheDocument();
   });
 
-  it("shows a missing current value for a trailing gap and exposes every series in text", () => {
+  it("uses each series recent finite value without filling a trailing chart gap", () => {
     render(
       <MetricChart
         title="网络速率"
@@ -227,16 +227,22 @@ describe("MetricChart", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("group", { name: "网络速率摘要" }),
-    ).toHaveTextContent("当前—");
-    expect(screen.getByRole("row", { name: "上传 — 1.00 KiB/s 1.00 KiB/s" }))
-      .toBeInTheDocument();
+    const summary = screen.getByRole("group", { name: "网络速率摘要" });
+    expect(summary).toHaveTextContent("最近值1.00 KiB/s");
+    expect(summary).not.toHaveTextContent("当前");
+    expect(screen.getByRole("row", {
+      name: "上传 1.00 KiB/s 1.00 KiB/s 1.00 KiB/s",
+    })).toBeInTheDocument();
     expect(
       screen.getByRole("row", {
         name: "下载 4.00 KiB/s 3.00 KiB/s 4.00 KiB/s",
       }),
     ).toBeInTheDocument();
+    const option = chart.setOption.mock.calls[0]?.[0] as {
+      series: Array<{ data: Array<[number, number | null]> }>;
+    };
+    expect(option.series[0]?.data.at(-1)).toEqual([660_000, null]);
+    expect(option.series[1]?.data.at(-1)).toEqual([660_000, 4_096]);
   });
 
   it("styles all six load lines by explicit logical pair identity", () => {

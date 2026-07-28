@@ -198,7 +198,7 @@ export function MetricChart({
         <h4 id={headingId}>{title}</h4>
         <dl className="metric-chart-summary" role="group" aria-label={`${title}摘要`}>
           <div>
-            <dt>当前</dt>
+            <dt>最近值</dt>
             <dd>{display(primary?.stats.current ?? null, formatter)}</dd>
           </div>
           <div>
@@ -224,7 +224,7 @@ export function MetricChart({
           <thead>
             <tr>
               <th scope="col">序列</th>
-              <th scope="col">当前</th>
+              <th scope="col">最近值</th>
               <th scope="col">平均</th>
               <th scope="col">最大</th>
             </tr>
