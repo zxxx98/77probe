@@ -164,11 +164,12 @@ function addBucketCandidates(
 
 /**
  * Downsampled buckets retain first/last finite values plus min/max within the
- * width-derived finite-sample budget. Every distinct null run adds its first
- * null plus, when present, the first following finite sample so separate gaps
- * stay visually separate. With P=`chartPointBudget(width)`, G=gap-run count,
- * and B=floor((P-2)/4), the per-series bound is 4B+2+2G <= P+2G. Exact
- * arbitrary gaps therefore cannot honestly have a strict P-point bound.
+ * width-derived finite-sample budget. Every distinct null run retains its
+ * first null, while adjacent finite runs retain their first and last samples.
+ * With P=`chartPointBudget(width)`, G=gap-run count, R=finite-run count, and
+ * B=floor((P-2)/4), the per-series bound is 4B+2+G+2R <= P+G+2R. Exact
+ * arbitrary transitions therefore cannot honestly have a strict P-point
+ * bound (and R <= G+1 gives the transition-only bound P+3G+2).
  */
 export function prepareChartSeries(
   history: HistoryResponse,
@@ -190,6 +191,7 @@ export function prepareChartSeries(
     current: null,
   }));
   const gapsOpen = definitions.map(() => false);
+  const lastFiniteIndices = definitions.map<number | null>(() => null);
 
   if (minuteCount <= pointBudget) {
     for (const selected of candidates) {
@@ -222,6 +224,10 @@ export function prepareChartSeries(
         const bucket = buckets[seriesIndex]!;
         if (value === null) {
           if (!gapsOpen[seriesIndex]) {
+            const lastFiniteIndex = lastFiniteIndices[seriesIndex];
+            if (lastFiniteIndex !== null) {
+              candidates[seriesIndex]!.add(lastFiniteIndex);
+            }
             candidates[seriesIndex]!.add(index);
             gapsOpen[seriesIndex] = true;
           }
@@ -231,6 +237,7 @@ export function prepareChartSeries(
           candidates[seriesIndex]!.add(index);
         }
         gapsOpen[seriesIndex] = false;
+        lastFiniteIndices[seriesIndex] = index;
         aggregate.current = value;
 
         aggregate.sum += value;

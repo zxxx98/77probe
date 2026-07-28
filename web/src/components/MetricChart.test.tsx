@@ -101,6 +101,21 @@ const history: HistoryResponse = {
   points: [minute(600, 10, 20, 1_024, 2_048), minute(720, 30, 50, 3_072, 4_096)],
 };
 
+function downsampledHistory(gaps: ReadonlySet<number>): HistoryResponse {
+  const minuteCount = 1_000;
+  const points: MinuteRecord[] = [];
+  for (let index = 0; index < minuteCount; index += 1) {
+    if (!gaps.has(index)) {
+      points.push(minute(index * 60, index, index + 10, index, index));
+    }
+  }
+  return {
+    fromUnix: 0,
+    toUnix: (minuteCount - 1) * 60,
+    points,
+  };
+}
+
 const average: MetricChartSeries = {
   name: "平均",
   role: "primary",
@@ -170,6 +185,75 @@ describe("MetricChart", () => {
 
     expect(init).toHaveBeenCalledTimes(1);
     expect(chart.setOption).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a three-minute finite run drawable between downsampled gaps", () => {
+    render(
+      <MetricChart
+        title="CPU 使用率"
+        history={downsampledHistory(new Set([5, 6, 10, 11]))}
+        series={[average]}
+        formatter={metricChartFormatters.percent}
+      />,
+    );
+    act(() => TestResizeObserver.instance?.emit(80));
+
+    const option = chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{
+        connectNulls: boolean;
+        data: Array<[number, number | null]>;
+      }>;
+    };
+    const line = option.series[0]!;
+    expect(line.connectNulls).toBe(false);
+    expect(
+      line.data.filter(
+        ([timestamp]) => timestamp >= 7 * 60_000 && timestamp <= 9 * 60_000,
+      ),
+    ).toEqual([
+      [7 * 60_000, 7],
+      [9 * 60_000, 9],
+    ]);
+  });
+
+  it("shows an isolated finite minute without adding symbols to normal points", () => {
+    render(
+      <MetricChart
+        title="CPU 使用率"
+        history={downsampledHistory(new Set([5, 6, 8, 9]))}
+        series={[average]}
+        formatter={metricChartFormatters.percent}
+      />,
+    );
+    act(() => TestResizeObserver.instance?.emit(80));
+
+    const option = chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{
+        data: Array<[number, number | null]>;
+        showSymbol: boolean;
+        symbolSize: (
+          value: [number, number | null],
+          params: { dataIndex: number },
+        ) => number;
+      }>;
+    };
+    const line = option.series[0]!;
+    const isolatedIndex = line.data.findIndex(
+      ([timestamp]) => timestamp === 7 * 60_000,
+    );
+    const connectedIndex = line.data.findIndex(
+      ([timestamp]) => timestamp === 4 * 60_000,
+    );
+    const gapIndex = line.data.findIndex(
+      ([timestamp]) => timestamp === 5 * 60_000,
+    );
+
+    expect(line.showSymbol).toBe(true);
+    expect(line.symbolSize(line.data[isolatedIndex]!, { dataIndex: isolatedIndex }))
+      .toBeGreaterThan(0);
+    expect(line.symbolSize(line.data[connectedIndex]!, { dataIndex: connectedIndex }))
+      .toBe(0);
+    expect(line.symbolSize(line.data[gapIndex]!, { dataIndex: gapIndex })).toBe(0);
   });
 
   it("provides an adjacent accessible recent, average, and maximum summary", () => {

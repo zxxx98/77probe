@@ -69,6 +69,7 @@ describe("prepareChartSeries", () => {
       ).toEqual([5 * 60_000, 10 * 60_000]);
       expect(series.data).toContainEqual([0, 0]);
       expect(series.data).toContainEqual([7 * 60_000, 7]);
+      expect(series.data).toContainEqual([9 * 60_000, 9]);
       expect(series.data).toContainEqual([12 * 60_000, 12]);
       expect(series.data).toContainEqual([
         (minuteCount - 1) * 60_000,
@@ -79,18 +80,22 @@ describe("prepareChartSeries", () => {
         timestamps.indexOf(7 * 60_000),
       );
       expect(timestamps.indexOf(7 * 60_000)).toBeLessThan(
+        timestamps.indexOf(9 * 60_000),
+      );
+      expect(timestamps.indexOf(9 * 60_000)).toBeLessThan(
         timestamps.indexOf(10 * 60_000),
       );
     }
   });
 
-  it("adds exact gap breaks to the finite sampling budget on pathological history", () => {
+  it("adds exact gap and finite-run boundaries to the sampling budget", () => {
     const fromUnix = 0;
     const toUnix = 30 * 24 * 60 * 60;
     const minuteCount = toUnix / 60 + 1;
     const alternatingGapStart = 10_000;
     const alternatingGapMinutes = 240;
     const gapRunCount = alternatingGapMinutes / 2;
+    const finiteRunCount = gapRunCount + 1;
     const points: MinuteRecord[] = [];
     for (let index = 0; index < minuteCount; index += 1) {
       const inAlternatingGaps =
@@ -123,7 +128,7 @@ describe("prepareChartSeries", () => {
       expect(timestamps).toContain((alternatingGapStart + offset + 1) * 60_000);
     }
     expect(data.length).toBeLessThanOrEqual(
-      prepared.pointBudget + gapRunCount * 2,
+      prepared.pointBudget + gapRunCount + finiteRunCount * 2,
     );
     expect(data.length).toBeLessThan(3_000);
     expect(data.length).toBeLessThan(minuteCount / 10);

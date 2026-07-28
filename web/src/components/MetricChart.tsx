@@ -24,6 +24,7 @@ interface MetricChartProps {
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 const AVERAGE_COLORS = ["#8a3158", "#486a78", "#6d5c7d"];
 const MAXIMUM_COLORS = ["#c07b94", "#6f8f9b", "#89769a"];
+const ISOLATED_POINT_SYMBOL_SIZE = 5;
 
 use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
@@ -56,6 +57,20 @@ function useReducedMotion(): boolean {
 
 function display(value: number | null, formatter: (value: number) => string) {
   return value === null ? "—" : formatter(value);
+}
+
+function isolatedPointSymbolSize(
+  data: PreparedMetricSeries["data"],
+  dataIndex: number,
+): number {
+  const point = data[dataIndex];
+  if (!point || point[1] === null) {
+    return 0;
+  }
+  const previousIsBreak = dataIndex === 0 || data[dataIndex - 1]?.[1] === null;
+  const nextIsBreak =
+    dataIndex === data.length - 1 || data[dataIndex + 1]?.[1] === null;
+  return previousIsBreak && nextIsBreak ? ISOLATED_POINT_SYMBOL_SIZE : 0;
 }
 
 function lineColor(series: PreparedMetricSeries): string {
@@ -165,8 +180,10 @@ export function MetricChart({
             type: "line",
             data: line.data,
             connectNulls: false,
-            showSymbol: false,
+            showSymbol: true,
             symbol: "circle",
+            symbolSize: (_value: unknown, params: { dataIndex: number }) =>
+              isolatedPointSymbolSize(line.data, params.dataIndex),
             itemStyle: { color },
             lineStyle: {
               color,
