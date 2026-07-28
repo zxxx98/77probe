@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"probe.local/monitor/internal/history"
 	"probe.local/monitor/internal/servers"
 )
 
-const thirtyDaysSeconds = int64(30 * 24 * 60 * 60)
+const (
+	thirtyDaysSeconds            = int64(30 * 24 * 60 * 60)
+	expectedHistoryQueryPageRows = 256
+)
 
 func TestStoreConstructorRequiresConnection(t *testing.T) {
 	assertHistoryPanics(t, func() { history.NewStore(nil) })
@@ -157,6 +161,47 @@ func TestStoreQueryCapsResultsAtThirtyDaysOfMinutes(t *testing.T) {
 	}
 }
 
+func TestStoreQueryReturnsEveryMinuteAcrossPageBoundaries(t *testing.T) {
+	for _, count := range []int{0, expectedHistoryQueryPageRows, expectedHistoryQueryPageRows + 1} {
+		t.Run(fmt.Sprintf("rows_%d", count), func(t *testing.T) {
+			store, conn, serverID := newHistoryStore(t)
+			insertRawMinutes(t, conn, serverID, 0, count, `{"disks":[]}`)
+
+			records, err := store.Query(context.Background(), serverID, 0, int64(count))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if records == nil || len(records) != count {
+				t.Fatalf("records = %#v (length %d), want allocated slice with %d records", records, len(records), count)
+			}
+			for minute, record := range records {
+				if record.ServerID != serverID || record.MinuteUnix != int64(minute) {
+					t.Fatalf("record %d = server %d minute %d, want server %d minute %d", minute, record.ServerID, record.MinuteUnix, serverID, minute)
+				}
+			}
+		})
+	}
+}
+
+func TestStoreQueryMalformedJSONOnLaterPageReturnsNoPartialResults(t *testing.T) {
+	store, conn, serverID := newHistoryStore(t)
+	insertRawMinutes(t, conn, serverID, 0, expectedHistoryQueryPageRows, `{"disks":[]}`)
+	if _, err := conn.Exec(`
+		INSERT INTO metric_minutes(server_id, minute_unix, payload_json, created_at)
+		VALUES (?, ?, '{', '2026-07-28T00:00:00Z')
+	`, serverID, expectedHistoryQueryPageRows); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := store.Query(context.Background(), serverID, 0, expectedHistoryQueryPageRows)
+	if err == nil || !strings.Contains(err.Error(), "unmarshal history minute 256") {
+		t.Fatalf("Query() error = %v, want contextual malformed JSON error for minute 256", err)
+	}
+	if records != nil {
+		t.Fatalf("Query() records = %#v, want no partial results", records)
+	}
+}
+
 func TestDeleteBeforeKeepsCutoffMinute(t *testing.T) {
 	store, _, serverID := newHistoryStore(t)
 	insertMinute(t, store, serverID, 99)
@@ -205,6 +250,40 @@ func insertMinute(t *testing.T, store *history.Store, serverID, minuteUnix int64
 	}
 	if err := store.UpsertMinute(context.Background(), record); err != nil {
 		t.Fatalf("insert minute %d: %v", minuteUnix, err)
+	}
+}
+
+func insertRawMinutes(t *testing.T, conn *sql.DB, serverID, startMinute int64, count int, payload string) {
+	t.Helper()
+	if count == 0 {
+		return
+	}
+
+	tx, err := conn.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement, err := tx.Prepare(`
+		INSERT INTO metric_minutes(server_id, minute_unix, payload_json, created_at)
+		VALUES (?, ?, ?, '2026-07-28T00:00:00Z')
+	`)
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	for offset := range count {
+		if _, err := statement.Exec(serverID, startMinute+int64(offset), payload); err != nil {
+			statement.Close()
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := statement.Close(); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 
