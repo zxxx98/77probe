@@ -36,6 +36,9 @@ type Store struct {
 }
 
 func NewStore(conn *sql.DB) *Store {
+	if conn == nil {
+		panic("history store requires database connection")
+	}
 	return &Store{conn: conn, now: time.Now}
 }
 

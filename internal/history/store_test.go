@@ -14,6 +14,10 @@ import (
 
 const thirtyDaysSeconds = int64(30 * 24 * 60 * 60)
 
+func TestStoreConstructorRequiresConnection(t *testing.T) {
+	assertHistoryPanics(t, func() { history.NewStore(nil) })
+}
+
 func TestStoreUpsertMinuteRoundTripsJSONAndOverwrites(t *testing.T) {
 	store, _, serverID := newHistoryStore(t)
 	ctx := context.Background()
@@ -216,4 +220,14 @@ func ExampleInvalidRangeError() {
 	err := &history.InvalidRangeError{FromUnix: 10, ToUnix: 5}
 	fmt.Println(errors.Is(err, history.ErrInvalidRange))
 	// Output: true
+}
+
+func assertHistoryPanics(t *testing.T, operation func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("operation did not panic")
+		}
+	}()
+	operation()
 }

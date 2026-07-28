@@ -160,9 +160,8 @@ func TestIngestCapturesHostOnlyRemoteAddress(t *testing.T) {
 func TestIngestForwardsAcceptedReportToHistoryExactlyOnce(t *testing.T) {
 	receivedAt := time.Date(2026, time.July, 28, 3, 4, 5, 0, time.FixedZone("UTC+2", 2*60*60))
 	historySink := &recordingHistorySink{}
-	router, _, store, _, server, token := newLiveRouterWithOptions(t,
+	router, _, store, _, server, token := newLiveRouterWithHistory(t, historySink, historySink,
 		live.WithHandlerClock(func() time.Time { return receivedAt }),
-		live.WithHistoryAccepter(historySink),
 	)
 	report := validReport()
 	body, _ := json.Marshal(report)
@@ -190,7 +189,7 @@ func TestIngestForwardsAcceptedReportToHistoryExactlyOnce(t *testing.T) {
 
 func TestIngestDoesNotForwardRejectedReportToHistory(t *testing.T) {
 	historySink := &recordingHistorySink{}
-	router, _, _, _, _, token := newLiveRouterWithOptions(t, live.WithHistoryAccepter(historySink))
+	router, _, _, _, _, token := newLiveRouterWithHistory(t, historySink, historySink)
 	report := validReport()
 	report.Host.Hostname = " "
 	body, _ := json.Marshal(report)
@@ -212,9 +211,8 @@ func TestIngestResponseIsIndependentOfHistoryWriterFailure(t *testing.T) {
 	wantErr := errors.New("history sqlite failed")
 	aggregator := history.NewAggregator(failingHistoryWriter{err: wantErr})
 	receivedAt := time.Date(2026, time.July, 28, 3, 4, 5, 0, time.UTC)
-	router, _, _, _, _, token := newLiveRouterWithOptions(t,
+	router, _, _, _, _, token := newLiveRouterWithHistory(t, aggregator, aggregator,
 		live.WithHandlerClock(func() time.Time { return receivedAt }),
-		live.WithHistoryAccepter(aggregator),
 	)
 	body, _ := json.Marshal(validReport())
 	req := httptest.NewRequest(http.MethodPost, "/api/agent/v1/report", bytes.NewReader(body))
@@ -233,10 +231,10 @@ func TestIngestResponseIsIndependentOfHistoryWriterFailure(t *testing.T) {
 
 func newLiveRouter(t *testing.T) (http.Handler, *servers.Service, *live.Store, *live.Hub, servers.Server, string) {
 	t.Helper()
-	return newLiveRouterWithOptions(t)
+	return newLiveRouterWithHistory(t, nil, nil)
 }
 
-func newLiveRouterWithOptions(t *testing.T, options ...live.HandlerOption) (http.Handler, *servers.Service, *live.Store, *live.Hub, servers.Server, string) {
+func newLiveRouterWithHistory(t *testing.T, accepter live.HistoryAccepter, remover live.HistoryBucketRemover, options ...live.HandlerOption) (http.Handler, *servers.Service, *live.Store, *live.Hub, servers.Server, string) {
 	t.Helper()
 	conn := newLiveDB(t)
 	serverService := servers.NewService(conn)
@@ -246,7 +244,11 @@ func newLiveRouterWithOptions(t *testing.T, options ...live.HandlerOption) (http
 	}
 	store := live.NewStore()
 	hub := live.NewHub()
-	coordinator := live.NewCoordinator(serverService, store, hub)
+	coordinatorOptions := make([]live.CoordinatorOption, 0, 1)
+	if accepter != nil || remover != nil {
+		coordinatorOptions = append(coordinatorOptions, live.WithHistory(accepter, remover))
+	}
+	coordinator := live.NewCoordinator(serverService, store, hub, coordinatorOptions...)
 	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +295,8 @@ type recordingHistorySink struct {
 func (s *recordingHistorySink) Accept(serverID int64, report protocol.AgentReport, receivedAt time.Time) {
 	s.calls = append(s.calls, historyCall{serverID: serverID, report: report, receivedAt: receivedAt})
 }
+
+func (s *recordingHistorySink) RemoveServer(int64) {}
 
 type failingHistoryWriter struct {
 	err error

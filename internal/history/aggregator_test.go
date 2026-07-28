@@ -238,6 +238,48 @@ func TestAggregatorFlushBeforeWaitHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestAggregatorRemoveServerDropsAllPendingBuckets(t *testing.T) {
+	writer := &recordingWriter{}
+	aggregator := NewAggregator(writer)
+	minute := time.Date(2026, time.July, 28, 1, 2, 0, 0, time.UTC)
+	aggregator.Accept(1, protocol.AgentReport{}, minute)
+	aggregator.Accept(1, protocol.AgentReport{}, minute.Add(time.Minute))
+	aggregator.Accept(2, protocol.AgentReport{}, minute)
+
+	aggregator.RemoveServer(1)
+
+	if err := aggregator.FlushBefore(context.Background(), minute.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	assertWrittenKeys(t, writer.snapshot(), []writtenKey{{ServerID: 2, MinuteUnix: minute.Unix()}})
+}
+
+func TestAggregatorRemoveServerDuringFailedWriteSuppressesRemovedBucket(t *testing.T) {
+	wantErr := errors.New("foreign key failed after deletion")
+	writer := newBlockingResultWriter(wantErr)
+	aggregator := NewAggregator(writer)
+	minute := time.Date(2026, time.July, 28, 1, 2, 0, 0, time.UTC)
+	aggregator.Accept(7, protocol.AgentReport{}, minute)
+
+	flushDone := make(chan error, 1)
+	go func() {
+		flushDone <- aggregator.FlushBefore(context.Background(), minute.Add(time.Minute))
+	}()
+	<-writer.started
+	aggregator.RemoveServer(7)
+	close(writer.release)
+
+	if err := <-flushDone; err != nil {
+		t.Fatalf("FlushBefore() error = %v, want nil for intentionally removed bucket", err)
+	}
+	if err := aggregator.FlushBefore(context.Background(), minute.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(writer.snapshot()); got != 1 {
+		t.Fatalf("writer calls = %d, want 1", got)
+	}
+}
+
 func TestAggregatorLastValuesUseLatestReceivedAt(t *testing.T) {
 	writer := &recordingWriter{}
 	aggregator := NewAggregator(writer)
@@ -341,6 +383,37 @@ type blockingWriter struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type blockingResultWriter struct {
+	mu      sync.Mutex
+	records []MinuteRecord
+	started chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func newBlockingResultWriter(err error) *blockingResultWriter {
+	return &blockingResultWriter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     err,
+	}
+}
+
+func (w *blockingResultWriter) UpsertMinute(_ context.Context, record MinuteRecord) error {
+	w.mu.Lock()
+	w.records = append(w.records, record)
+	w.mu.Unlock()
+	close(w.started)
+	<-w.release
+	return w.err
+}
+
+func (w *blockingResultWriter) snapshot() []MinuteRecord {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]MinuteRecord(nil), w.records...)
 }
 
 func newBlockingWriter() *blockingWriter {

@@ -53,6 +53,9 @@ type jobsConfig struct {
 }
 
 func NewJobs(flusher MinuteFlusher, retention RetentionStore) *Jobs {
+	if flusher == nil || retention == nil {
+		panic("history jobs require flusher and retention store")
+	}
 	return newJobs(flusher, retention, jobsConfig{})
 }
 

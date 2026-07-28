@@ -39,10 +39,16 @@ type Config struct {
 }
 
 type Application struct {
-	conn      *sql.DB
-	runtime   *runtime
-	closeOnce sync.Once
-	closeErr  error
+	conn    *sql.DB
+	runtime *runtime
+
+	lifecycleMu       sync.Mutex
+	backgroundStarted bool
+	backgroundCancel  context.CancelFunc
+	backgroundDone    <-chan struct{}
+	closeStarted      bool
+	closeDone         chan struct{}
+	closeErr          error
 }
 
 func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
@@ -50,13 +56,13 @@ func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 	serverService := servers.NewService(conn)
 	store := live.NewStore()
 	hub := live.NewHub()
-	coordinator := live.NewCoordinator(serverService, store, hub)
+	historyStore := history.NewStore(conn)
+	historyAggregator := history.NewAggregator(historyStore)
+	coordinator := live.NewCoordinator(serverService, store, hub, live.WithHistory(historyAggregator, historyAggregator))
 	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
 		return nil, err
 	}
-	historyStore := history.NewStore(conn)
-	historyAggregator := history.NewAggregator(historyStore)
-	liveHandler := live.NewHandler(coordinator, live.WithHistoryAccepter(historyAggregator))
+	liveHandler := live.NewHandler(coordinator)
 	return &runtime{
 		handler: httpapi.NewRouter(httpapi.Dependencies{
 			Auth:       authService,
@@ -100,17 +106,70 @@ func (a *Application) Handler() http.Handler {
 }
 
 func (a *Application) RunBackground(ctx context.Context) <-chan struct{} {
-	return a.runtime.startBackground(ctx)
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if a.closeStarted {
+		if a.backgroundDone == nil {
+			a.backgroundDone = alreadyDone()
+		}
+		return a.backgroundDone
+	}
+	if a.backgroundStarted {
+		return a.backgroundDone
+	}
+	backgroundCtx, cancel := context.WithCancel(ctx)
+	a.backgroundStarted = true
+	a.backgroundCancel = cancel
+	a.backgroundDone = a.runtime.startBackground(backgroundCtx)
+	return a.backgroundDone
 }
 
 func (a *Application) Close() error {
-	if a == nil || a.conn == nil {
+	if a == nil {
 		return nil
 	}
-	a.closeOnce.Do(func() {
-		a.closeErr = a.conn.Close()
-	})
-	return a.closeErr
+
+	a.lifecycleMu.Lock()
+	if a.closeStarted {
+		closeDone := a.closeDone
+		a.lifecycleMu.Unlock()
+		<-closeDone
+		a.lifecycleMu.Lock()
+		err := a.closeErr
+		a.lifecycleMu.Unlock()
+		return err
+	}
+	a.closeStarted = true
+	a.closeDone = make(chan struct{})
+	cancel := a.backgroundCancel
+	done := a.backgroundDone
+	if done == nil {
+		a.backgroundDone = alreadyDone()
+		done = a.backgroundDone
+	}
+	closeDone := a.closeDone
+	a.lifecycleMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	<-done
+	var err error
+	if a.conn != nil {
+		err = a.conn.Close()
+	}
+
+	a.lifecycleMu.Lock()
+	a.closeErr = err
+	close(closeDone)
+	a.lifecycleMu.Unlock()
+	return err
+}
+
+func alreadyDone() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
 }
 
 func (r *runtime) startBackground(ctx context.Context) <-chan struct{} {
@@ -136,18 +195,13 @@ func Run(ctx context.Context, addr string, config Config) error {
 	if err != nil {
 		return err
 	}
-	defer application.Close()
-	liveCtx, cancelLive := context.WithCancel(ctx)
-	liveDone := application.RunBackground(liveCtx)
-	defer func() {
-		cancelLive()
-		<-liveDone
-	}()
+	serverBase, cancelServerBase := context.WithCancel(context.WithoutCancel(ctx))
+	application.RunBackground(context.WithoutCancel(ctx))
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: application.Handler(),
 		BaseContext: func(net.Listener) context.Context {
-			return liveCtx
+			return serverBase
 		},
 	}
 	errCh := make(chan error, 1)
@@ -157,11 +211,27 @@ func Run(ctx context.Context, addr string, config Config) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		return shutdownServer(shutdownCtx, srv, application, cancelServerBase)
 	case err := <-errCh:
+		cancelServerBase()
+		closeErr := application.Close()
 		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+			return closeErr
 		}
-		return err
+		return errors.Join(err, closeErr)
 	}
+}
+
+func shutdownServer(ctx context.Context, server *http.Server, application *Application, cancelServerBase context.CancelFunc) error {
+	shutdownErr := server.Shutdown(ctx)
+	var forceCloseErr error
+	if shutdownErr != nil {
+		forceCloseErr = server.Close()
+		if errors.Is(forceCloseErr, http.ErrServerClosed) {
+			forceCloseErr = nil
+		}
+	}
+	cancelServerBase()
+	applicationErr := application.Close()
+	return errors.Join(shutdownErr, forceCloseErr, applicationErr)
 }

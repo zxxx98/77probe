@@ -60,6 +60,11 @@ func TestJobsRunStartupRetentionAndScheduledWork(t *testing.T) {
 	}
 }
 
+func TestJobsConstructorRequiresDependencies(t *testing.T) {
+	assertJobsPanics(t, func() { NewJobs(nil, newRecordingRetention()) })
+	assertJobsPanics(t, func() { NewJobs(newRecordingFlusher(), nil) })
+}
+
 func TestJobsShutdownFlushUsesFreshBoundedContext(t *testing.T) {
 	clock := newJobsClock(time.Date(2026, time.July, 28, 1, 2, 59, 0, time.UTC))
 	flusher := newRecordingFlusher()
@@ -358,4 +363,14 @@ func waitForJobsDone(t *testing.T, done <-chan struct{}) {
 	case <-time.After(time.Second):
 		t.Fatal("jobs did not stop")
 	}
+}
+
+func assertJobsPanics(t *testing.T, operation func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("operation did not panic")
+		}
+	}()
+	operation()
 }

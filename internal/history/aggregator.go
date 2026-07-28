@@ -56,6 +56,16 @@ func (a *Aggregator) Accept(serverID int64, report protocol.AgentReport, receive
 	entry.revision++
 }
 
+func (a *Aggregator) RemoveServer(serverID int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key := range a.buckets {
+		if key.ServerID == serverID {
+			delete(a.buckets, key)
+		}
+	}
+}
+
 func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -72,6 +82,7 @@ func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 
 	type candidate struct {
 		key      bucketKey
+		bucket   *bucket
 		revision uint64
 		record   MinuteRecord
 	}
@@ -95,6 +106,7 @@ func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 		entry := a.buckets[key]
 		candidates = append(candidates, candidate{
 			key:      key,
+			bucket:   entry,
 			revision: entry.revision,
 			record:   entry.accumulator.Finish(key.ServerID, key.MinuteUnix),
 		})
@@ -107,7 +119,9 @@ func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
 
 		a.mu.Lock()
 		entry := a.buckets[candidate.key]
-		if err == nil && entry.revision == candidate.revision {
+		if entry != candidate.bucket {
+			err = nil
+		} else if err == nil && entry.revision == candidate.revision {
 			delete(a.buckets, candidate.key)
 		}
 		a.mu.Unlock()

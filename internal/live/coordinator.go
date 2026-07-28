@@ -18,6 +18,16 @@ type eventPublisher interface {
 	Publish(Event)
 }
 
+type HistoryAccepter interface {
+	Accept(serverID int64, report protocol.AgentReport, receivedAt time.Time)
+}
+
+type HistoryBucketRemover interface {
+	RemoveServer(serverID int64)
+}
+
+type CoordinatorOption func(*Coordinator)
+
 type Coordinator struct {
 	mu            sync.Mutex
 	serverService *servers.Service
@@ -25,21 +35,34 @@ type Coordinator struct {
 	store         *Store
 	hub           *Hub
 	publisher     eventPublisher
+	history       HistoryAccepter
+	historyRemove HistoryBucketRemover
 	beforeAccept  func(string)
 }
 
-func NewCoordinator(registry *servers.Service, store *Store, hub *Hub) *Coordinator {
+func NewCoordinator(registry *servers.Service, store *Store, hub *Hub, options ...CoordinatorOption) *Coordinator {
 	if registry == nil || store == nil || hub == nil {
 		panic("live coordinator requires server service, store, and hub")
 	}
-	coordinator := newCoordinator(registry, store, hub)
+	coordinator := newCoordinator(registry, store, hub, options...)
 	coordinator.serverService = registry
 	coordinator.hub = hub
 	return coordinator
 }
 
-func newCoordinator(registry serverRegistry, store *Store, publisher eventPublisher) *Coordinator {
-	return &Coordinator{registry: registry, store: store, publisher: publisher}
+func newCoordinator(registry serverRegistry, store *Store, publisher eventPublisher, options ...CoordinatorOption) *Coordinator {
+	coordinator := &Coordinator{registry: registry, store: store, publisher: publisher}
+	for _, option := range options {
+		option(coordinator)
+	}
+	return coordinator
+}
+
+func WithHistory(accepter HistoryAccepter, remover HistoryBucketRemover) CoordinatorOption {
+	return func(coordinator *Coordinator) {
+		coordinator.history = accepter
+		coordinator.historyRemove = remover
+	}
 }
 
 func (c *Coordinator) Accept(ctx context.Context, token string, report protocol.AgentReport, receivedAt time.Time, sourceIP string) (Snapshot, error) {
@@ -57,6 +80,9 @@ func (c *Coordinator) Accept(ctx context.Context, token string, report protocol.
 	}
 	snapshot := c.store.UpsertFrom(server, report, receivedAt, sourceIP)
 	c.publisher.Publish(Event{Type: "snapshot.updated", Snapshot: snapshot})
+	if c.history != nil {
+		c.history.Accept(server.ID, report, receivedAt)
+	}
 	return snapshot, nil
 }
 
@@ -88,5 +114,8 @@ func (c *Coordinator) ReconcileDelete(serverID int64, mutate func() error) error
 		return err
 	}
 	c.store.delete(serverID)
+	if c.historyRemove != nil {
+		c.historyRemove.RemoveServer(serverID)
+	}
 	return nil
 }
