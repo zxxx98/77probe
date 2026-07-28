@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,6 +93,136 @@ func TestRunUsesConfiguredAcceleratedInterval(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("run() error = %v, want context cancellation", err)
+	}
+}
+
+func TestRunTreatsConfiguredDurationDuringBatchAsSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		duration       time.Duration
+		blockedRequest int32
+	}{
+		{name: "initial batch", duration: 75 * time.Millisecond, blockedRequest: 1},
+		{name: "scheduled batch", duration: 250 * time.Millisecond, blockedRequest: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			blocked := make(chan struct{})
+			release := make(chan struct{})
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) != test.blockedRequest {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				close(blocked)
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer server.Close()
+			defer close(release)
+
+			tokenFile := filepath.Join(t.TempDir(), "tokens.txt")
+			if err := os.WriteFile(tokenFile, []byte("tp_one\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- run(context.Background(), config{
+					baseURL:   server.URL,
+					tokenFile: tokenFile,
+					agents:    1,
+					duration:  test.duration,
+					interval:  100 * time.Millisecond,
+					allowFast: true,
+				})
+			}()
+
+			select {
+			case <-blocked:
+			case err := <-done:
+				t.Fatalf("run() finished before request %d was blocked: %v", test.blockedRequest, err)
+			case <-time.After(time.Second):
+				t.Fatalf("request %d did not start", test.blockedRequest)
+			}
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("run() error = %v, want successful duration completion", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("run() did not stop at configured duration")
+			}
+		})
+	}
+}
+
+func TestRunReturnsParentCancellationDuringBatch(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	tokenFile := filepath.Join(t.TempDir(), "tokens.txt")
+	if err := os.WriteFile(tokenFile, []byte("tp_one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, config{
+			baseURL:   server.URL,
+			tokenFile: tokenFile,
+			agents:    1,
+			duration:  time.Second,
+			interval:  100 * time.Millisecond,
+			allowFast: true,
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("initial request did not start")
+	}
+	cancel()
+	if err := <-done; err != context.Canceled {
+		t.Fatalf("run() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBatchRunErrorPreservesServerErrorAfterDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	batchErr := sendBatch(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		[]string{"tp_one"},
+		time.Unix(1_753_588_800, 0).UTC(),
+	)
+	if batchErr == nil {
+		t.Fatal("sendBatch accepted server error")
+	}
+
+	runCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := batchRunError(runCtx, batchErr); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("batchRunError() = %v, want original server error", err)
 	}
 }
 

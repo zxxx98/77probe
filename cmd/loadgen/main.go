@@ -67,7 +67,7 @@ func run(ctx context.Context, configuration config) error {
 	defer cancel()
 	client := &http.Client{Timeout: 10 * time.Second}
 	if err := sendBatch(runCtx, client, configuration.baseURL, tokens, time.Now().UTC()); err != nil {
-		return err
+		return batchRunError(runCtx, err)
 	}
 
 	ticker := time.NewTicker(configuration.interval)
@@ -81,9 +81,21 @@ func run(ctx context.Context, configuration config) error {
 			return runCtx.Err()
 		case collectedAt := <-ticker.C:
 			if err := sendBatch(runCtx, client, configuration.baseURL, tokens, collectedAt.UTC()); err != nil {
-				return err
+				return batchRunError(runCtx, err)
 			}
 		}
+	}
+}
+
+func batchRunError(runCtx context.Context, err error) error {
+	switch {
+	case errors.Is(runCtx.Err(), context.DeadlineExceeded) &&
+		(errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)):
+		return nil
+	case errors.Is(runCtx.Err(), context.Canceled) && errors.Is(err, context.Canceled):
+		return context.Canceled
+	default:
+		return err
 	}
 }
 
