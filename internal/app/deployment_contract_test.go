@@ -43,6 +43,34 @@ func TestDeploymentFilesDescribeSingleNonRootService(t *testing.T) {
 	}
 }
 
+func TestDockerfileBuildsServerForBuildKitTargetArchitecture(t *testing.T) {
+	root := filepath.Join("..", "..")
+	dockerfile := readDeploymentFile(t, filepath.Join(root, "deploy", "Dockerfile"))
+
+	for _, required := range []string{
+		"ARG TARGETOS\n",
+		"ARG TARGETARCH\n",
+		"GOOS=${TARGETOS} GOARCH=${TARGETARCH}",
+		"GOOS=linux GOARCH=amd64",
+		"-o /out/downloads/tinyprobe-agent-linux-amd64 ./cmd/agent",
+		"GOOS=linux GOARCH=arm64",
+		"-o /out/downloads/tinyprobe-agent-linux-arm64 ./cmd/agent",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Errorf("Dockerfile missing target architecture contract %q", required)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"ARG TARGETOS=",
+		"ARG TARGETARCH=",
+	} {
+		if strings.Contains(dockerfile, forbidden) {
+			t.Errorf("Dockerfile must not default BuildKit target argument %q", forbidden)
+		}
+	}
+}
+
 func readDeploymentFile(t *testing.T, path string) string {
 	t.Helper()
 	body, err := os.ReadFile(path)

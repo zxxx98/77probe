@@ -11,8 +11,8 @@ RUN pnpm build
 
 FROM golang:1.26-alpine AS go-build
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
