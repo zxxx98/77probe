@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AuthGate } from "../auth/AuthGate";
 import { AppNav } from "../components/AppNav";
+import { AlertsPage } from "../pages/AlertsPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import { ServerDetailPage } from "../pages/ServerDetailPage";
 import {
@@ -132,6 +133,7 @@ export function DashboardRouter() {
 
   const detailMatch = pathname.match(detailPath);
   const managementPath = pathname === "/servers" || pathname === "/servers/";
+  const alertsPath = pathname === "/alerts" || pathname === "/alerts/";
   const serverId = detailMatch ? Number(detailMatch[1]) : null;
   const validServerId =
     serverId !== null && Number.isSafeInteger(serverId) && serverId > 0;
@@ -173,7 +175,9 @@ export function DashboardRouter() {
           </button>
         </aside>
       ) : null}
-      {detailMatch ? (
+      {alertsPath ? (
+        <AlertsPage />
+      ) : detailMatch ? (
         validServerId ? (
           <ServerDetailPage
             key={serverId}

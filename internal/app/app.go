@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"probe.local/monitor/internal/alerting"
 	"probe.local/monitor/internal/auth"
 	monitorDB "probe.local/monitor/internal/db"
 	"probe.local/monitor/internal/history"
@@ -26,6 +27,9 @@ type runtime struct {
 	store             *live.Store
 	historyStore      *history.Store
 	historyAggregator *history.Aggregator
+	alertRepository   *alerting.Repository
+	alertEvaluator    *alerting.Evaluator
+	alertDispatcher   *alerting.Dispatcher
 	background        []backgroundRunner
 	streams           streamCloser
 }
@@ -64,27 +68,37 @@ func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 	hub := live.NewHub()
 	historyStore := history.NewStore(conn)
 	historyAggregator := history.NewAggregator(historyStore)
-	coordinator := live.NewCoordinator(serverService, store, hub, live.WithHistory(historyAggregator, historyAggregator))
+	alertRepository := alerting.NewRepository(conn)
+	alertDispatcher := alerting.NewDispatcher(alertRepository, alerting.NewWebhookClient())
+	alertEvaluator := alerting.NewEvaluator(alertRepository, store, alertDispatcher)
+	coordinator := live.NewCoordinator(serverService, store, hub, live.WithHistory(historyAggregator, historyAggregator), live.WithObserver(alertEvaluator))
 	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
 		return nil, err
 	}
 	liveHandler := live.NewHandler(coordinator)
 	historyHandler := history.NewHandler(historyStore, serverService)
+	alertHandler := alerting.NewHandler(alertRepository, serverService, alertDispatcher)
 	return &runtime{
 		handler: httpapi.NewRouter(httpapi.Dependencies{
 			Auth:       authService,
 			Servers:    serverService,
 			Live:       liveHandler,
 			History:    historyHandler,
+			Alerting:   alertHandler,
 			AgentFiles: agentFiles,
 		}),
 		servers:           serverService,
 		store:             store,
 		historyStore:      historyStore,
 		historyAggregator: historyAggregator,
+		alertRepository:   alertRepository,
+		alertEvaluator:    alertEvaluator,
+		alertDispatcher:   alertDispatcher,
 		background: []backgroundRunner{
 			live.NewSweeper(coordinator),
 			history.NewJobs(historyAggregator, historyStore),
+			alertEvaluator,
+			alertDispatcher,
 		},
 		streams: hub,
 	}, nil

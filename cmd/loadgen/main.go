@@ -26,12 +26,16 @@ const (
 )
 
 type config struct {
-	baseURL   string
-	tokenFile string
-	agents    int
-	duration  time.Duration
-	interval  time.Duration
-	allowFast bool
+	baseURL         string
+	tokenFile       string
+	agents          int
+	duration        time.Duration
+	interval        time.Duration
+	allowFast       bool
+	cpuPercent      float64
+	diskUsedPercent float64
+	stopAfter       time.Duration
+	resumeAfter     time.Duration
 }
 
 func main() {
@@ -42,6 +46,10 @@ func main() {
 	flag.DurationVar(&configuration.duration, "duration", time.Minute, "load generation duration")
 	flag.DurationVar(&configuration.interval, "interval", defaultReportInterval, "interval between report batches")
 	flag.BoolVar(&configuration.allowFast, "allow-fast", false, "allow verification-only report intervals below 5s (minimum 100ms)")
+	flag.Float64Var(&configuration.cpuPercent, "cpu-percent", -1, "override CPU usage percent for alert verification (0-100)")
+	flag.Float64Var(&configuration.diskUsedPercent, "disk-used-percent", -1, "override disk used percent for alert verification (0-100)")
+	flag.DurationVar(&configuration.stopAfter, "stop-after", 0, "stop reporting after this duration to verify offline alerts")
+	flag.DurationVar(&configuration.resumeAfter, "resume-after", 0, "resume reporting at this elapsed duration after -stop-after")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -66,7 +74,8 @@ func run(ctx context.Context, configuration config) error {
 	runCtx, cancel := context.WithTimeout(ctx, configuration.duration)
 	defer cancel()
 	client := &http.Client{Timeout: 10 * time.Second}
-	if err := sendBatch(runCtx, client, configuration.baseURL, tokens, time.Now().UTC()); err != nil {
+	startedAt := time.Now()
+	if err := sendConfiguredBatch(runCtx, client, configuration, tokens, time.Now().UTC()); err != nil {
 		return batchRunError(runCtx, err)
 	}
 
@@ -80,7 +89,10 @@ func run(ctx context.Context, configuration config) error {
 			}
 			return runCtx.Err()
 		case collectedAt := <-ticker.C:
-			if err := sendBatch(runCtx, client, configuration.baseURL, tokens, collectedAt.UTC()); err != nil {
+			if !reportingEnabled(configuration, collectedAt.Sub(startedAt)) {
+				continue
+			}
+			if err := sendConfiguredBatch(runCtx, client, configuration, tokens, collectedAt.UTC()); err != nil {
 				return batchRunError(runCtx, err)
 			}
 		}
@@ -109,6 +121,15 @@ func validateConfig(configuration config) error {
 	if configuration.interval <= 0 {
 		return fmt.Errorf("interval must be greater than zero")
 	}
+	if (configuration.cpuPercent < 0 && configuration.cpuPercent != -1) || configuration.cpuPercent > 100 {
+		return fmt.Errorf("cpu-percent must be between 0 and 100")
+	}
+	if (configuration.diskUsedPercent < 0 && configuration.diskUsedPercent != -1) || configuration.diskUsedPercent > 100 {
+		return fmt.Errorf("disk-used-percent must be between 0 and 100")
+	}
+	if configuration.stopAfter < 0 || configuration.resumeAfter < 0 || (configuration.resumeAfter > 0 && configuration.stopAfter == 0) || (configuration.resumeAfter > 0 && configuration.resumeAfter <= configuration.stopAfter) {
+		return fmt.Errorf("resume-after must be greater than stop-after, and stop-after must be configured")
+	}
 	if configuration.allowFast {
 		if configuration.interval < minimumFastInterval {
 			return fmt.Errorf("interval must be at least 100ms when -allow-fast=true")
@@ -119,6 +140,13 @@ func validateConfig(configuration config) error {
 		return fmt.Errorf("intervals below 5s require -allow-fast=true; accelerated verification has a 100ms minimum")
 	}
 	return nil
+}
+
+func reportingEnabled(configuration config, elapsed time.Duration) bool {
+	if configuration.stopAfter == 0 || elapsed < configuration.stopAfter {
+		return true
+	}
+	return configuration.resumeAfter > 0 && elapsed >= configuration.resumeAfter
 }
 
 func loadTokens(path string, agents int) ([]string, error) {
@@ -141,12 +169,17 @@ func loadTokens(path string, agents int) ([]string, error) {
 }
 
 func sendBatch(ctx context.Context, client *http.Client, baseURL string, tokens []string, collectedAt time.Time) error {
+	return sendConfiguredBatch(ctx, client, config{baseURL: baseURL, cpuPercent: -1, diskUsedPercent: -1}, tokens, collectedAt)
+}
+
+func sendConfiguredBatch(ctx context.Context, client *http.Client, configuration config, tokens []string, collectedAt time.Time) error {
+	baseURL := configuration.baseURL
 	endpoint, err := reportEndpoint(baseURL)
 	if err != nil {
 		return err
 	}
 	for index, token := range tokens {
-		body, err := json.Marshal(reportForAgent(index, collectedAt))
+		body, err := json.Marshal(reportForAgentWithConfig(index, collectedAt, configuration))
 		if err != nil {
 			return err
 		}
@@ -197,10 +230,14 @@ func reportEndpoint(baseURL string) (string, error) {
 }
 
 func reportForAgent(index int, collectedAt time.Time) protocol.AgentReport {
+	return reportForAgentWithConfig(index, collectedAt, config{cpuPercent: -1, diskUsedPercent: -1})
+}
+
+func reportForAgentWithConfig(index int, collectedAt time.Time, configuration config) protocol.AgentReport {
 	sequence := uint64(index + 1)
 	totalMemory := uint64(8 * 1024 * 1024 * 1024)
 	totalDisk := uint64(128 * 1024 * 1024 * 1024)
-	return protocol.AgentReport{
+	report := protocol.AgentReport{
 		CollectedAtUnix: collectedAt.Unix(),
 		AgentVersion:    "loadgen",
 		Host: protocol.HostInfo{
@@ -245,4 +282,11 @@ func reportForAgent(index int, collectedAt time.Time) protocol.AgentReport {
 			TotalDownloadBytes:     sequence * 2 * 1024 * 1024 * 1024,
 		},
 	}
+	if configuration.cpuPercent >= 0 {
+		report.CPU.UsagePercent = configuration.cpuPercent
+	}
+	if configuration.diskUsedPercent >= 0 {
+		report.Disks[0].UsedBytes = totalDisk * uint64(configuration.diskUsedPercent*100) / 10000
+	}
+	return report
 }

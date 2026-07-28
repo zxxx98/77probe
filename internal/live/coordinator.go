@@ -37,6 +37,7 @@ type Coordinator struct {
 	publisher     eventPublisher
 	history       HistoryAccepter
 	historyRemove HistoryBucketRemover
+	observers     []eventPublisher
 	beforeAccept  func(string)
 }
 
@@ -65,6 +66,14 @@ func WithHistory(accepter HistoryAccepter, remover HistoryBucketRemover) Coordin
 	}
 }
 
+func WithObserver(observer eventPublisher) CoordinatorOption {
+	return func(coordinator *Coordinator) {
+		if observer != nil {
+			coordinator.observers = append(coordinator.observers, observer)
+		}
+	}
+}
+
 func (c *Coordinator) Accept(ctx context.Context, token string, report protocol.AgentReport, receivedAt time.Time, sourceIP string) (Snapshot, error) {
 	if c.beforeAccept != nil {
 		c.beforeAccept(token)
@@ -79,7 +88,7 @@ func (c *Coordinator) Accept(ctx context.Context, token string, report protocol.
 		return Snapshot{}, err
 	}
 	snapshot := c.store.UpsertFrom(server, report, receivedAt, sourceIP)
-	c.publisher.Publish(Event{Type: "snapshot.updated", Snapshot: snapshot})
+	c.publish(Event{Type: "snapshot.updated", Snapshot: snapshot})
 	if c.history != nil {
 		c.history.Accept(server.ID, report, receivedAt)
 	}
@@ -91,9 +100,16 @@ func (c *Coordinator) Sweep(cutoff time.Time) []Snapshot {
 	defer c.mu.Unlock()
 	changed := c.store.MarkOffline(cutoff)
 	for _, snapshot := range changed {
-		c.publisher.Publish(Event{Type: "snapshot.offline", Snapshot: snapshot})
+		c.publish(Event{Type: "snapshot.offline", Snapshot: snapshot})
 	}
 	return changed
+}
+
+func (c *Coordinator) publish(event Event) {
+	c.publisher.Publish(event)
+	for _, observer := range c.observers {
+		observer.Publish(event)
+	}
 }
 
 func (c *Coordinator) ReconcileUpdate(mutate func() (servers.Server, error)) (servers.Server, error) {

@@ -45,6 +45,14 @@ export function AppNav({ pathname, onNavigate }: AppNavProps) {
         >
           服务器
         </a>
+        <a
+          className={`nav-link${pathname === "/alerts" || pathname === "/alerts/" ? " nav-link-current" : ""}`}
+          href="/alerts"
+          aria-current={pathname === "/alerts" || pathname === "/alerts/" ? "page" : undefined}
+          onClick={(event) => navigate(event, "/alerts")}
+        >
+          告警
+        </a>
       </nav>
     </header>
   );

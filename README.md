@@ -13,8 +13,17 @@ TinyProbe 是面向个人自托管场景的轻量 Linux 服务器探针。一个
 - 历史指标按分钟聚合平均值、最大值和末值，提供 1 天、7 天、30 天趋势图，并显式保留缺失分钟的间断。
 - 历史记录固定自动保留 30 天；服务端不持久化原始 5 秒上报。
 - SQLite WAL 持久化和响应式 Web 管理界面。
+- 持久化告警规则、触发/恢复事件和通用 Webhook 通知；Webhook 失败最多重试三次且不阻塞 Agent 上报。
 
 当前没有数据维护或保留期设置界面，30 天保留策略不能通过 UI 调整。
+
+## 告警与 Webhook
+
+“告警”页面可为单台服务器配置离线、CPU 使用率、内存使用率、磁盘使用率和磁盘可用空间规则。资源规则默认持续 5 分钟；离线规则使用既有的 30 秒未上报判定。每次告警周期最多发送一次触发通知和一次恢复通知；重复提醒默认关闭。
+
+Webhook 使用 JSON `POST`，只接受 `http` 或 `https` 地址。可配置请求头和正文模板，正文必须渲染为合法 JSON。模板可使用 `.ServerName`、`.Metric`、`.Status`、`.CurrentValue`、`.Threshold`、`.StartedAt`、`.EndedAt` 和 `.DetailURL`；需要 JSON 转义字符串时使用 `{{json .ServerName}}`。名称含 `authorization`、`token`、`secret` 或 `key` 的请求头会在重新加载时掩码显示。
+
+Webhook 首次发送后最多再重试两次，延迟为 5 秒和 15 秒。投递失败只记录在告警事件中，Agent 上报仍会正常返回 `204`。
 
 ## Docker Compose 启动
 
@@ -88,6 +97,20 @@ go run ./cmd/loadgen \
 ```
 
 加速模式只用于验证，不会改变生产 Agent 固定的 5 秒上报节奏。未启用 `-allow-fast` 时，低于 5 秒的间隔会被拒绝；启用后仍不能低于 100 毫秒。
+
+验证告警时可固定指标，或暂停上报以触发离线规则：
+
+```bash
+go run ./cmd/loadgen \
+  -base-url http://127.0.0.1:8080 \
+  -token-file ./tokens.txt \
+  -agents 10 \
+  -duration 3m \
+  -cpu-percent 95 \
+  -disk-used-percent 92 \
+  -stop-after 1m \
+  -resume-after 2m
+```
 
 ## 验证
 
