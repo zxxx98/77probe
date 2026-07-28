@@ -57,6 +57,7 @@ func TestAccumulatorAggregatesMinutePayload(t *testing.T) {
 		Disks: []protocol.DiskStats{
 			{Mountpoint: "/var", TotalBytes: 1000, UsedBytes: 100},
 			{Mountpoint: "/", TotalBytes: 2000, UsedBytes: 500},
+			{Mountpoint: "/zero", TotalBytes: 0, UsedBytes: 40},
 		},
 		DiskIO: protocol.DiskIOStats{
 			ReadBytesPerSecond:  100,
@@ -85,6 +86,7 @@ func TestAccumulatorAggregatesMinutePayload(t *testing.T) {
 		Disks: []protocol.DiskStats{
 			{Mountpoint: "/", TotalBytes: 2200, UsedBytes: 1100},
 			{Mountpoint: "/var", TotalBytes: 1200, UsedBytes: 360},
+			{Mountpoint: "/zero", TotalBytes: 0, UsedBytes: 60},
 		},
 		DiskIO: protocol.DiskIOStats{
 			ReadBytesPerSecond:  300,
@@ -112,6 +114,7 @@ func TestAccumulatorAggregatesMinutePayload(t *testing.T) {
 			Disks: []DiskMinute{
 				{Mountpoint: "/", Usage: Pair{Average: 37.5, Maximum: 50}, TotalBytes: 2200, UsedBytes: 1100},
 				{Mountpoint: "/var", Usage: Pair{Average: 20, Maximum: 30}, TotalBytes: 1200, UsedBytes: 360},
+				{Mountpoint: "/zero", Usage: Pair{Average: 0, Maximum: 0}, TotalBytes: 0, UsedBytes: 60},
 			},
 			DiskReadBPS:   Pair{Average: 200, Maximum: 300},
 			DiskWriteBPS:  Pair{Average: 700, Maximum: 900},
