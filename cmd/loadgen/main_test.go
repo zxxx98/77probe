@@ -3,16 +3,97 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"probe.local/monitor/internal/protocol"
 )
+
+func TestValidateConfigIntervalBoundaries(t *testing.T) {
+	base := config{agents: 1, duration: time.Second}
+	tests := []struct {
+		name        string
+		interval    time.Duration
+		allowFast   bool
+		wantError   string
+		wantAllowed bool
+	}{
+		{name: "zero", interval: 0, wantError: "greater than zero"},
+		{name: "negative", interval: -time.Millisecond, wantError: "greater than zero"},
+		{name: "below default without guard", interval: 5*time.Second - time.Nanosecond, wantError: "-allow-fast"},
+		{name: "default without guard", interval: 5 * time.Second, wantAllowed: true},
+		{name: "slower without guard", interval: 6 * time.Second, wantAllowed: true},
+		{name: "below floor with guard", interval: 100*time.Millisecond - time.Nanosecond, allowFast: true, wantError: "100ms"},
+		{name: "floor with guard", interval: 100 * time.Millisecond, allowFast: true, wantAllowed: true},
+		{name: "below default with guard", interval: 250 * time.Millisecond, allowFast: true, wantAllowed: true},
+		{name: "default with guard", interval: 5 * time.Second, allowFast: true, wantAllowed: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configuration := base
+			configuration.interval = test.interval
+			configuration.allowFast = test.allowFast
+			err := validateConfig(configuration)
+			if test.wantAllowed {
+				if err != nil {
+					t.Fatalf("validateConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("validateConfig() error = %v, want text %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestRunUsesConfiguredAcceleratedInterval(t *testing.T) {
+	requests := make(chan struct{}, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	tokenFile := filepath.Join(t.TempDir(), "tokens.txt")
+	if err := os.WriteFile(tokenFile, []byte("tp_one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, config{
+			baseURL:   server.URL,
+			tokenFile: tokenFile,
+			agents:    1,
+			duration:  2 * time.Second,
+			interval:  100 * time.Millisecond,
+			allowFast: true,
+		})
+	}()
+
+	for batch := 1; batch <= 3; batch++ {
+		select {
+		case <-requests:
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatalf("received %d batches, want at least 3", batch-1)
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run() error = %v, want context cancellation", err)
+	}
+}
 
 func TestLoadTokensSelectsRequestedNonEmptyTokens(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.txt")

@@ -20,13 +20,18 @@ import (
 	"probe.local/monitor/internal/protocol"
 )
 
-const reportInterval = 5 * time.Second
+const (
+	defaultReportInterval = 5 * time.Second
+	minimumFastInterval   = 100 * time.Millisecond
+)
 
 type config struct {
 	baseURL   string
 	tokenFile string
 	agents    int
 	duration  time.Duration
+	interval  time.Duration
+	allowFast bool
 }
 
 func main() {
@@ -35,6 +40,8 @@ func main() {
 	flag.StringVar(&configuration.tokenFile, "token-file", "tokens.txt", "file containing one Agent token per line")
 	flag.IntVar(&configuration.agents, "agents", 10, "number of Agents to simulate")
 	flag.DurationVar(&configuration.duration, "duration", time.Minute, "load generation duration")
+	flag.DurationVar(&configuration.interval, "interval", defaultReportInterval, "interval between report batches")
+	flag.BoolVar(&configuration.allowFast, "allow-fast", false, "allow verification-only report intervals below 5s (minimum 100ms)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -45,11 +52,8 @@ func main() {
 }
 
 func run(ctx context.Context, configuration config) error {
-	if configuration.agents <= 0 {
-		return fmt.Errorf("agents must be greater than zero")
-	}
-	if configuration.duration <= 0 {
-		return fmt.Errorf("duration must be greater than zero")
+	if err := validateConfig(configuration); err != nil {
+		return err
 	}
 	if _, err := reportEndpoint(configuration.baseURL); err != nil {
 		return err
@@ -66,7 +70,7 @@ func run(ctx context.Context, configuration config) error {
 		return err
 	}
 
-	ticker := time.NewTicker(reportInterval)
+	ticker := time.NewTicker(configuration.interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -81,6 +85,28 @@ func run(ctx context.Context, configuration config) error {
 			}
 		}
 	}
+}
+
+func validateConfig(configuration config) error {
+	if configuration.agents <= 0 {
+		return fmt.Errorf("agents must be greater than zero")
+	}
+	if configuration.duration <= 0 {
+		return fmt.Errorf("duration must be greater than zero")
+	}
+	if configuration.interval <= 0 {
+		return fmt.Errorf("interval must be greater than zero")
+	}
+	if configuration.allowFast {
+		if configuration.interval < minimumFastInterval {
+			return fmt.Errorf("interval must be at least 100ms when -allow-fast=true")
+		}
+		return nil
+	}
+	if configuration.interval < defaultReportInterval {
+		return fmt.Errorf("intervals below 5s require -allow-fast=true; accelerated verification has a 100ms minimum")
+	}
+	return nil
 }
 
 func loadTokens(path string, agents int) ([]string, error) {
