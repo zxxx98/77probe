@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
     ports:
-      - "8080:8080"
+      - "23333:8080"
     environment:
       TINYPROBE_ADDR: ":8080"
       TINYPROBE_DB_PATH: "/data/tinyprobe.db"
