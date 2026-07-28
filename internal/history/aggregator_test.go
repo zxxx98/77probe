@@ -192,6 +192,52 @@ func TestAggregatorSerializesFlushBeforeCalls(t *testing.T) {
 	})
 }
 
+func TestAggregatorFlushBeforeWaitHonorsCancellation(t *testing.T) {
+	writer := newBlockingWriter()
+	aggregator := NewAggregator(writer)
+	minute := time.Date(2026, time.July, 28, 1, 2, 0, 0, time.UTC)
+	aggregator.Accept(1, protocol.AgentReport{}, minute)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- aggregator.FlushBefore(context.Background(), minute.Add(time.Minute))
+	}()
+	<-writer.started
+
+	var releaseOnce sync.Once
+	releaseFirst := func() {
+		releaseOnce.Do(func() { close(writer.release) })
+	}
+	t.Cleanup(releaseFirst)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- aggregator.FlushBefore(ctx, minute.Add(time.Minute))
+	}()
+
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("second FlushBefore() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("second FlushBefore did not return promptly after cancellation")
+	}
+	if got := len(writer.snapshot()); got != 1 {
+		t.Fatalf("writer calls while first flush blocked = %d, want 1", got)
+	}
+
+	releaseFirst()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first FlushBefore() error = %v", err)
+	}
+	if got := len(writer.snapshot()); got != 1 {
+		t.Fatalf("total writer calls = %d, want 1", got)
+	}
+}
+
 func TestAggregatorLastValuesUseLatestReceivedAt(t *testing.T) {
 	writer := &recordingWriter{}
 	aggregator := NewAggregator(writer)

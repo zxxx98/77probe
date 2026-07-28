@@ -24,16 +24,17 @@ type bucket struct {
 }
 
 type Aggregator struct {
-	flushMu sync.Mutex
-	mu      sync.Mutex
-	writer  Writer
-	buckets map[bucketKey]*bucket
+	flushGate chan struct{}
+	mu        sync.Mutex
+	writer    Writer
+	buckets   map[bucketKey]*bucket
 }
 
 func NewAggregator(writer Writer) *Aggregator {
 	return &Aggregator{
-		writer:  writer,
-		buckets: make(map[bucketKey]*bucket),
+		flushGate: make(chan struct{}, 1),
+		writer:    writer,
+		buckets:   make(map[bucketKey]*bucket),
 	}
 }
 
@@ -56,8 +57,18 @@ func (a *Aggregator) Accept(serverID int64, report protocol.AgentReport, receive
 }
 
 func (a *Aggregator) FlushBefore(ctx context.Context, minute time.Time) error {
-	a.flushMu.Lock()
-	defer a.flushMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case a.flushGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-a.flushGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	type candidate struct {
 		key      bucketKey
