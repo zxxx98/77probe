@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"probe.local/monitor/internal/auth"
+	"probe.local/monitor/internal/history"
 	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/servers"
 	"probe.local/monitor/internal/webui"
@@ -18,6 +19,7 @@ type Dependencies struct {
 	Auth       *auth.Service
 	Servers    *servers.Service
 	Live       *live.Handler
+	History    *history.Handler
 	AgentFiles fs.FS
 }
 
@@ -42,6 +44,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/api/servers", serverHandler.List)
 		r.Get("/api/servers/status", deps.Live.ListStatus)
 		r.Get("/api/servers/{id}/status", deps.Live.DetailStatus)
+		r.Get("/api/servers/{id}/history", deps.History.Get)
 		r.Get("/api/live", deps.Live.SSE)
 		r.Post("/api/servers", serverHandler.Create)
 		r.Patch("/api/servers/{id}", serverHandler.Update)

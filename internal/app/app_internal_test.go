@@ -11,17 +11,79 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"probe.local/monitor/internal/auth"
 	monitorDB "probe.local/monitor/internal/db"
 	"probe.local/monitor/internal/history"
 	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/protocol"
 	"probe.local/monitor/internal/servers"
 )
+
+func TestRuntimeWiresAuthenticatedHistoryEndpoint(t *testing.T) {
+	conn, err := monitorDB.Open(filepath.Join(t.TempDir(), "monitor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx := context.Background()
+	if err := monitorDB.ApplyMigrations(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newRuntime(conn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authService := auth.NewService(conn)
+	if err := authService.CreateAdmin(ctx, "xiaodi", "correct horse battery staple"); err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := authService.Login(ctx, "xiaodi", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, _, err := runtime.servers.Create(ctx, "home-lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	minute := time.Now().UTC().Truncate(time.Minute)
+	wantPoint := history.MinuteRecord{
+		ServerID:   server.ID,
+		MinuteUnix: minute.Unix(),
+		Payload: history.MinutePayload{
+			CPUUsage: history.Pair{Average: 12.5, Maximum: 25},
+			Disks:    []history.DiskMinute{},
+		},
+	}
+	if err := runtime.historyStore.UpsertMinute(ctx, wantPoint); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/servers/"+strconv.FormatInt(server.ID, 10)+"/history?range=1d", nil)
+	request.AddCookie(&http.Cookie{Name: "tinyprobe_session", Value: session})
+	recorder := httptest.NewRecorder()
+	runtime.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		FromUnix int64                  `json:"fromUnix"`
+		ToUnix   int64                  `json:"toUnix"`
+		Points   []history.MinuteRecord `json:"points"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Points) != 1 || response.Points[0].ServerID != wantPoint.ServerID || response.Points[0].MinuteUnix != wantPoint.MinuteUnix || response.Points[0].Payload.CPUUsage != wantPoint.Payload.CPUUsage {
+		t.Fatalf("points = %+v, want point %+v", response.Points, wantPoint)
+	}
+}
 
 func TestRuntimeWiresLiveIngestionToHistoryAndStopsBackground(t *testing.T) {
 	conn, err := monitorDB.Open(filepath.Join(t.TempDir(), "monitor.db"))

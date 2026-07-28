@@ -69,11 +69,13 @@ func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 		return nil, err
 	}
 	liveHandler := live.NewHandler(coordinator)
+	historyHandler := history.NewHandler(historyStore, serverService)
 	return &runtime{
 		handler: httpapi.NewRouter(httpapi.Dependencies{
 			Auth:       authService,
 			Servers:    serverService,
 			Live:       liveHandler,
+			History:    historyHandler,
 			AgentFiles: agentFiles,
 		}),
 		servers:           serverService,
