@@ -103,4 +103,47 @@ describe("dashboard responsive grid contract", () => {
       /\.server-row-field--mobile-core\s*\{[^}]*display:\s*none/s,
     );
   });
+
+  it("keeps historical charts shrinkable without fixed-width overflow", () => {
+    const desktopCss = dashboardCss.slice(0, dashboardCss.indexOf("@media"));
+
+    expect(blockFor(desktopCss, ".historical-metric-groups"))
+      .toMatch(/min-width:\s*0/);
+    expect(blockFor(desktopCss, ".historical-metric-group"))
+      .toMatch(/min-width:\s*0/);
+    expect(blockFor(desktopCss, ".metric-chart"))
+      .toMatch(/min-width:\s*0/);
+    expect(blockFor(desktopCss, ".metric-chart-canvas"))
+      .toMatch(/width:\s*100%/);
+    expect(blockFor(desktopCss, ".metric-chart-canvas"))
+      .toMatch(/height:\s*(?:clamp\()?1[5-8]rem/);
+    expect(blockFor(desktopCss, ".metric-chart-canvas"))
+      .not.toMatch(/min-width:\s*[1-9]/);
+  });
+
+  it("stacks chart headings and uses zero-minimum columns by 390px", () => {
+    const narrowBreakpoint = blockFor(
+      dashboardCss,
+      "@media (max-width: 25rem)",
+    );
+
+    expect(blockFor(narrowBreakpoint, ".metric-chart-heading"))
+      .toMatch(/flex-direction:\s*column/);
+    expect(blockFor(narrowBreakpoint, ".metric-chart-summary"))
+      .toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+    expect(blockFor(narrowBreakpoint, ".range-strip"))
+      .toMatch(/grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+  });
+
+  it("removes skeleton and range transition motion for reduced motion", () => {
+    const reducedMotion = blockFor(
+      dashboardCss,
+      "@media (prefers-reduced-motion: reduce)",
+    );
+
+    expect(blockFor(reducedMotion, ".history-skeleton"))
+      .toMatch(/animation:\s*none/);
+    expect(blockFor(reducedMotion, ".range-strip button"))
+      .toMatch(/transition:\s*none/);
+  });
 });

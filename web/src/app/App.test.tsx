@@ -118,7 +118,7 @@ describe("DashboardRouter", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "1天" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "1天" })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole("link", { name: "返回概览" }));
 
