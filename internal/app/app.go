@@ -14,16 +14,23 @@ import (
 
 	"probe.local/monitor/internal/auth"
 	monitorDB "probe.local/monitor/internal/db"
+	"probe.local/monitor/internal/history"
 	"probe.local/monitor/internal/httpapi"
 	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/servers"
 )
 
 type runtime struct {
-	handler http.Handler
-	servers *servers.Service
-	store   *live.Store
-	sweeper *live.Sweeper
+	handler           http.Handler
+	servers           *servers.Service
+	store             *live.Store
+	historyStore      *history.Store
+	historyAggregator *history.Aggregator
+	background        []backgroundRunner
+}
+
+type backgroundRunner interface {
+	Run(context.Context)
 }
 
 type Config struct {
@@ -47,7 +54,9 @@ func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
 		return nil, err
 	}
-	liveHandler := live.NewHandler(coordinator)
+	historyStore := history.NewStore(conn)
+	historyAggregator := history.NewAggregator(historyStore)
+	liveHandler := live.NewHandler(coordinator, live.WithHistoryAccepter(historyAggregator))
 	return &runtime{
 		handler: httpapi.NewRouter(httpapi.Dependencies{
 			Auth:       authService,
@@ -55,9 +64,14 @@ func newRuntime(conn *sql.DB, agentFiles fs.FS) (*runtime, error) {
 			Live:       liveHandler,
 			AgentFiles: agentFiles,
 		}),
-		servers: serverService,
-		store:   store,
-		sweeper: live.NewSweeper(coordinator),
+		servers:           serverService,
+		store:             store,
+		historyStore:      historyStore,
+		historyAggregator: historyAggregator,
+		background: []backgroundRunner{
+			live.NewSweeper(coordinator),
+			history.NewJobs(historyAggregator, historyStore),
+		},
 	}, nil
 }
 
@@ -86,7 +100,7 @@ func (a *Application) Handler() http.Handler {
 }
 
 func (a *Application) RunBackground(ctx context.Context) <-chan struct{} {
-	return a.runtime.startSweeper(ctx)
+	return a.runtime.startBackground(ctx)
 }
 
 func (a *Application) Close() error {
@@ -99,10 +113,19 @@ func (a *Application) Close() error {
 	return a.closeErr
 }
 
-func (r *runtime) startSweeper(ctx context.Context) <-chan struct{} {
+func (r *runtime) startBackground(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(len(r.background))
+	for _, runner := range r.background {
+		runner := runner
+		go func() {
+			defer wait.Done()
+			runner.Run(ctx)
+		}()
+	}
 	go func() {
-		r.sweeper.Run(ctx)
+		wait.Wait()
 		close(done)
 	}()
 	return done

@@ -22,6 +22,10 @@ const maxReportBytes = 256 * 1024
 
 type HandlerOption func(*Handler)
 
+type HistoryAccepter interface {
+	Accept(serverID int64, report protocol.AgentReport, receivedAt time.Time)
+}
+
 type Handler struct {
 	servers            *servers.Service
 	store              *Store
@@ -29,6 +33,7 @@ type Handler struct {
 	now                func() time.Time
 	newHeartbeatTicker func(time.Duration) Ticker
 	coordinator        *Coordinator
+	history            HistoryAccepter
 }
 
 func NewHandler(coordinator *Coordinator, options ...HandlerOption) *Handler {
@@ -57,6 +62,10 @@ func WithHandlerClock(now func() time.Time) HandlerOption {
 
 func WithHeartbeatTicker(factory func(time.Duration) Ticker) HandlerOption {
 	return func(handler *Handler) { handler.newHeartbeatTicker = factory }
+}
+
+func WithHistoryAccepter(accepter HistoryAccepter) HandlerOption {
+	return func(handler *Handler) { handler.history = accepter }
 }
 
 func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +103,8 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 		writeLiveError(w, http.StatusBadRequest, err)
 		return
 	}
-	_, err = h.coordinator.Accept(r.Context(), token, report, h.now().UTC(), sourceIP(r.RemoteAddr))
+	receivedAt := h.now().UTC()
+	snapshot, err := h.coordinator.Accept(r.Context(), token, report, receivedAt, sourceIP(r.RemoteAddr))
 	if errors.Is(err, servers.ErrInvalidToken) {
 		writeLiveError(w, http.StatusUnauthorized, err)
 		return
@@ -106,6 +116,9 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeLiveError(w, http.StatusInternalServerError, errors.New("internal server error"))
 		return
+	}
+	if h.history != nil {
+		h.history.Accept(snapshot.ServerID, report, receivedAt)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

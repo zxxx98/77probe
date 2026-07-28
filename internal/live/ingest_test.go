@@ -5,14 +5,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	monitorDB "probe.local/monitor/internal/db"
+	"probe.local/monitor/internal/history"
 	"probe.local/monitor/internal/httpapi"
 	"probe.local/monitor/internal/live"
 	"probe.local/monitor/internal/protocol"
@@ -154,7 +157,86 @@ func TestIngestCapturesHostOnlyRemoteAddress(t *testing.T) {
 	}
 }
 
+func TestIngestForwardsAcceptedReportToHistoryExactlyOnce(t *testing.T) {
+	receivedAt := time.Date(2026, time.July, 28, 3, 4, 5, 0, time.FixedZone("UTC+2", 2*60*60))
+	historySink := &recordingHistorySink{}
+	router, _, store, _, server, token := newLiveRouterWithOptions(t,
+		live.WithHandlerClock(func() time.Time { return receivedAt }),
+		live.WithHistoryAccepter(historySink),
+	)
+	report := validReport()
+	body, _ := json.Marshal(report)
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/v1/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(historySink.calls) != 1 {
+		t.Fatalf("history calls = %d, want 1", len(historySink.calls))
+	}
+	call := historySink.calls[0]
+	if call.serverID != server.ID || !reflect.DeepEqual(call.report, report) || !call.receivedAt.Equal(receivedAt.UTC()) {
+		t.Fatalf("history call = %+v, want server=%d report=%+v receivedAt=%s", call, server.ID, report, receivedAt.UTC())
+	}
+	snapshot, ok := store.Get(server.ID)
+	if !ok || !snapshot.LastReceivedAt.Equal(call.receivedAt) {
+		t.Fatalf("snapshot receivedAt = %s, history receivedAt = %s, ok=%v", snapshot.LastReceivedAt, call.receivedAt, ok)
+	}
+}
+
+func TestIngestDoesNotForwardRejectedReportToHistory(t *testing.T) {
+	historySink := &recordingHistorySink{}
+	router, _, _, _, _, token := newLiveRouterWithOptions(t, live.WithHistoryAccepter(historySink))
+	report := validReport()
+	report.Host.Hostname = " "
+	body, _ := json.Marshal(report)
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/v1/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(historySink.calls) != 0 {
+		t.Fatalf("history calls = %d, want 0", len(historySink.calls))
+	}
+}
+
+func TestIngestResponseIsIndependentOfHistoryWriterFailure(t *testing.T) {
+	wantErr := errors.New("history sqlite failed")
+	aggregator := history.NewAggregator(failingHistoryWriter{err: wantErr})
+	receivedAt := time.Date(2026, time.July, 28, 3, 4, 5, 0, time.UTC)
+	router, _, _, _, _, token := newLiveRouterWithOptions(t,
+		live.WithHandlerClock(func() time.Time { return receivedAt }),
+		live.WithHistoryAccepter(aggregator),
+	)
+	body, _ := json.Marshal(validReport())
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/v1/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if err := aggregator.FlushBefore(context.Background(), receivedAt.Add(time.Minute)); !errors.Is(err, wantErr) {
+		t.Fatalf("background flush error = %v, want %v", err, wantErr)
+	}
+}
+
 func newLiveRouter(t *testing.T) (http.Handler, *servers.Service, *live.Store, *live.Hub, servers.Server, string) {
+	t.Helper()
+	return newLiveRouterWithOptions(t)
+}
+
+func newLiveRouterWithOptions(t *testing.T, options ...live.HandlerOption) (http.Handler, *servers.Service, *live.Store, *live.Hub, servers.Server, string) {
 	t.Helper()
 	conn := newLiveDB(t)
 	serverService := servers.NewService(conn)
@@ -168,7 +250,7 @@ func newLiveRouter(t *testing.T) (http.Handler, *servers.Service, *live.Store, *
 	if err := serverService.AttachRegistryObserver(coordinator); err != nil {
 		t.Fatal(err)
 	}
-	liveHandler := live.NewHandler(coordinator)
+	liveHandler := live.NewHandler(coordinator, options...)
 	return httpapi.NewRouter(httpapi.Dependencies{Servers: serverService, Live: liveHandler}), serverService, store, hub, server, token
 }
 
@@ -197,3 +279,25 @@ func validReport() protocol.AgentReport {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+type historyCall struct {
+	serverID   int64
+	report     protocol.AgentReport
+	receivedAt time.Time
+}
+
+type recordingHistorySink struct {
+	calls []historyCall
+}
+
+func (s *recordingHistorySink) Accept(serverID int64, report protocol.AgentReport, receivedAt time.Time) {
+	s.calls = append(s.calls, historyCall{serverID: serverID, report: report, receivedAt: receivedAt})
+}
+
+type failingHistoryWriter struct {
+	err error
+}
+
+func (w failingHistoryWriter) UpsertMinute(context.Context, history.MinuteRecord) error {
+	return w.err
+}

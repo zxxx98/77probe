@@ -14,7 +14,7 @@ import (
 	"probe.local/monitor/internal/protocol"
 )
 
-func TestRuntimeWiresLiveIngestionAndStopsSweeper(t *testing.T) {
+func TestRuntimeWiresLiveIngestionToHistoryAndStopsBackground(t *testing.T) {
 	conn, err := monitorDB.Open(filepath.Join(t.TempDir(), "monitor.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -47,13 +47,96 @@ func TestRuntimeWiresLiveIngestionAndStopsSweeper(t *testing.T) {
 	if snapshot, ok := runtime.store.Get(server.ID); !ok || !snapshot.Online {
 		t.Fatalf("snapshot=%+v ok=%v", snapshot, ok)
 	}
+	snapshot, _ := runtime.store.Get(server.ID)
+	minute := snapshot.LastReceivedAt.UTC().Truncate(time.Minute)
+	if err := runtime.historyAggregator.FlushBefore(context.Background(), minute.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	records, err := runtime.historyStore.Query(context.Background(), server.ID, minute.Unix(), minute.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ServerID != server.ID || records[0].MinuteUnix != minute.Unix() {
+		t.Fatalf("history records=%+v", records)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := runtime.startSweeper(ctx)
+	done := runtime.startBackground(ctx)
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("runtime sweeper did not stop after cancellation")
+		t.Fatal("runtime background work did not stop after cancellation")
+	}
+}
+
+func TestRuntimeBackgroundDoneWaitsForEveryRunner(t *testing.T) {
+	first := newBlockingBackgroundRunner()
+	second := newBlockingBackgroundRunner()
+	runtime := &runtime{background: []backgroundRunner{first, second}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runtime.startBackground(ctx)
+	first.waitStarted(t)
+	second.waitStarted(t)
+
+	cancel()
+	first.waitCanceled(t)
+	second.waitCanceled(t)
+	select {
+	case <-done:
+		t.Fatal("background done closed before runners returned")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(first.release)
+	select {
+	case <-done:
+		t.Fatal("background done closed while second runner was blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(second.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("background done did not close after every runner returned")
+	}
+}
+
+type blockingBackgroundRunner struct {
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+func newBlockingBackgroundRunner() *blockingBackgroundRunner {
+	return &blockingBackgroundRunner{
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+}
+
+func (r *blockingBackgroundRunner) Run(ctx context.Context) {
+	close(r.started)
+	<-ctx.Done()
+	close(r.canceled)
+	<-r.release
+}
+
+func (r *blockingBackgroundRunner) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.started:
+	case <-time.After(time.Second):
+		t.Fatal("background runner did not start")
+	}
+}
+
+func (r *blockingBackgroundRunner) waitCanceled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("background runner did not observe cancellation")
 	}
 }
