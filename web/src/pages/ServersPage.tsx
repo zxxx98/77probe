@@ -33,6 +33,13 @@ type FocusTarget =
   | { kind: "rotate"; serverId: number }
   | { kind: "server"; serverId: number };
 
+const uninstallCommand = `sudo systemctl disable --now tinyprobe-agent.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/tinyprobe-agent.service
+sudo rm -f /etc/tinyprobe-agent.env
+sudo rm -f /usr/local/bin/tinyprobe-agent
+sudo systemctl daemon-reload
+sudo systemctl reset-failed tinyprobe-agent.service 2>/dev/null || true`;
+
 export function ServersPage({
   oneTimeToken,
   tokenRequestPending,
@@ -61,6 +68,11 @@ export function ServersPage({
   const [confirmation, setConfirmation] = useState<{
     serverId: number;
     action: Confirmation;
+  } | null>(null);
+  const [uninstallServerID, setUninstallServerID] = useState<number | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<{
+    message: string;
+    failed: boolean;
   } | null>(null);
   const [operationError, setOperationError] = useState("");
   const addButtonRef = useRef<HTMLButtonElement>(null);
@@ -229,6 +241,18 @@ export function ServersPage({
       focusAfterUpdate.current = { kind: "add" };
     }
     onTokenCleared();
+  };
+
+  const copyUninstallCommand = async () => {
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(uninstallCommand);
+      setCopyFeedback({ message: "卸载命令已复制", failed: false });
+    } catch {
+      setCopyFeedback({ message: "复制失败，请手动选择内容。", failed: true });
+    }
   };
 
   return (
@@ -443,6 +467,22 @@ export function ServersPage({
                         重新生成 Token
                       </button>
                       <button
+                        className="button button-quiet"
+                        type="button"
+                        disabled={rowBusy}
+                        aria-label={`卸载 ${server.name} 的 Agent`}
+                        aria-controls={`agent-uninstall-${server.id}`}
+                        aria-expanded={uninstallServerID === server.id}
+                        onClick={() => {
+                          setUninstallServerID((current) =>
+                            current === server.id ? null : server.id,
+                          );
+                          setCopyFeedback(null);
+                        }}
+                      >
+                        卸载 Agent
+                      </button>
+                      <button
                         className="button button-danger-quiet"
                         type="button"
                         disabled={rowBusy}
@@ -455,6 +495,44 @@ export function ServersPage({
                         删除
                       </button>
                     </div>
+                  ) : null}
+
+                  {uninstallServerID === server.id ? (
+                    <section
+                      id={`agent-uninstall-${server.id}`}
+                      className="agent-uninstall-panel"
+                      aria-label={`卸载 ${server.name} 的 Agent`}
+                    >
+                      <div>
+                        <strong>在目标服务器执行此命令以卸载 Agent。</strong>
+                        <p>
+                          命令不会删除 TinyProbe 中的服务器记录；如不再监控此机器，请随后使用“删除”操作。
+                        </p>
+                      </div>
+                      <div className="install-copy-block">
+                        <div className="install-copy-heading">
+                          <h3>卸载命令</h3>
+                          <button
+                            className="button button-quiet"
+                            type="button"
+                            onClick={() => void copyUninstallCommand()}
+                          >
+                            复制卸载命令
+                          </button>
+                        </div>
+                        <pre data-testid={`uninstall-command-${server.id}`} tabIndex={0}>
+                          <code>{uninstallCommand}</code>
+                        </pre>
+                      </div>
+                      {copyFeedback ? (
+                        <p
+                          className={copyFeedback.failed ? "copy-feedback copy-feedback--error" : "copy-feedback"}
+                          role={copyFeedback.failed ? "alert" : "status"}
+                        >
+                          {copyFeedback.message}
+                        </p>
+                      ) : null}
+                    </section>
                   ) : null}
 
                   {confirming ? (

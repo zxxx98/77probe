@@ -27,6 +27,14 @@ const createServer = vi.mocked(serverApi.create);
 const updateServer = vi.mocked(serverApi.update);
 const deleteServer = vi.mocked(serverApi.remove);
 const rotateToken = vi.mocked(serverApi.rotateToken);
+const writeText = vi.fn<(value: string) => Promise<void>>();
+
+const uninstallCommand = `sudo systemctl disable --now tinyprobe-agent.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/tinyprobe-agent.service
+sudo rm -f /etc/tinyprobe-agent.env
+sudo rm -f /usr/local/bin/tinyprobe-agent
+sudo systemctl daemon-reload
+sudo systemctl reset-failed tinyprobe-agent.service 2>/dev/null || true`;
 
 const serverFixture: ServerRecord = {
   id: 7,
@@ -132,6 +140,12 @@ describe("ServersPage", () => {
     updateServer.mockReset();
     deleteServer.mockReset();
     rotateToken.mockReset();
+    writeText.mockReset();
+    writeText.mockResolvedValue();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
     listServers.mockResolvedValue([serverFixture]);
   });
 
@@ -268,6 +282,24 @@ describe("ServersPage", () => {
     expect(updateServer).toHaveBeenNthCalledWith(1, 7, { enabled: false });
     expect(updateServer).toHaveBeenNthCalledWith(2, 7, { enabled: true });
     expect(listServers).toHaveBeenCalledTimes(1);
+  });
+
+  it("reveals and copies the idempotent Agent uninstall command", async () => {
+    await loadRow();
+
+    const action = screen.getByRole("button", {
+      name: "卸载 home-lab 的 Agent",
+    });
+    expect(action).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(action);
+
+    expect(action).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("uninstall-command-7").textContent).toBe(
+      uninstallCommand,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "复制卸载命令" }));
+    expect(writeText).toHaveBeenCalledWith(uninstallCommand);
   });
 
   it("requires an inline confirmation before deleting and explains the cascade", async () => {

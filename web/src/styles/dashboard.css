@@ -1322,6 +1322,26 @@
   border-top: 1px solid var(--color-surface-strong);
 }
 
+.agent-uninstall-panel {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  gap: .25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-surface-strong);
+}
+
+.agent-uninstall-panel > div:first-child p {
+  max-width: 68ch;
+  margin-top: .25rem;
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+}
+
+.agent-uninstall-panel .install-copy-block {
+  padding-bottom: 0;
+}
+
 .inline-confirmation p {
   max-width: 68ch;
   margin-top: .25rem;
