@@ -70,20 +70,29 @@ func TestGopsutilSourceHostCPUAndMemory(t *testing.T) {
 
 func TestGopsutilSourceFiltersPersistentDisks(t *testing.T) {
 	requestedAll := false
+	var usageRequests []string
 	source := newGopsutilSource(gopsutilDeps{
 		partitions: func(_ context.Context, all bool) ([]disk.PartitionStat, error) {
 			requestedAll = all
 			return []disk.PartitionStat{
 				{Mountpoint: "/", Fstype: "ext4"},
+				{Mountpoint: "/data", Fstype: "xfs"},
 				{Mountpoint: "/net/nfs", Fstype: "nfs"},
 				{Mountpoint: "/net/cifs", Fstype: "cifs"},
 				{Mountpoint: "/net/sshfs", Fstype: "fuse.sshfs"},
+				{Mountpoint: "/boot", Fstype: "ext4"},
+				{Mountpoint: "/boot/efi", Fstype: "vfat"},
+				{Mountpoint: "/boot/firmware", Fstype: "vfat"},
+				{Mountpoint: "/bootdata", Fstype: "ext4"},
+				{Mountpoint: "/run/credentials/unit", Fstype: "ramfs"},
+				{Mountpoint: "/sys/kernel/debug", Fstype: "debugfs"},
 				{Mountpoint: "/run", Fstype: "tmpfs"},
 				{Mountpoint: "/container", Fstype: "overlay"},
 				{Mountpoint: "/sys/fs/cgroup", Fstype: "cgroup2"},
 			}, nil
 		},
-		diskUsage: func(context.Context, string) (*disk.UsageStat, error) {
+		diskUsage: func(_ context.Context, mountpoint string) (*disk.UsageStat, error) {
+			usageRequests = append(usageRequests, mountpoint)
 			return &disk.UsageStat{Total: 1_000, Used: 500}, nil
 		},
 	})
@@ -99,8 +108,12 @@ func TestGopsutilSourceFiltersPersistentDisks(t *testing.T) {
 	for _, disk := range disks {
 		gotMountpoints = append(gotMountpoints, disk.Mountpoint)
 	}
-	if got, want := strings.Join(gotMountpoints, ","), "/,/net/nfs,/net/cifs,/net/sshfs"; got != want {
+	const want = "/,/data,/net/nfs,/net/cifs,/net/sshfs,/bootdata"
+	if got := strings.Join(gotMountpoints, ","); got != want {
 		t.Fatalf("PersistentDisks() = %+v", disks)
+	}
+	if got := strings.Join(usageRequests, ","); got != want {
+		t.Fatalf("diskUsage() mountpoints = %q, want %q", got, want)
 	}
 }
 
@@ -241,7 +254,7 @@ func TestDefaultRouteInterfaceReturnsClearErrorWhenNoValidRouteExists(t *testing
 }
 
 func TestPersistentFilesystemFilter(t *testing.T) {
-	for _, filesystem := range []string{"tmpfs", "devtmpfs", "squashfs", "overlay", "proc", "sysfs", "cgroup", "cgroup2"} {
+	for _, filesystem := range []string{"tmpfs", "devtmpfs", "squashfs", "overlay", "proc", "sysfs", "cgroup", "cgroup2", "ramfs", "debugfs", "securityfs", "tracefs", "devpts", "nsfs", "pstore"} {
 		if isPersistentFilesystem(filesystem) {
 			t.Errorf("isPersistentFilesystem(%q) = true, want false", filesystem)
 		}
@@ -249,6 +262,14 @@ func TestPersistentFilesystemFilter(t *testing.T) {
 	for _, filesystem := range []string{"ext4", "xfs", "btrfs", "zfs"} {
 		if !isPersistentFilesystem(filesystem) {
 			t.Errorf("isPersistentFilesystem(%q) = false, want true", filesystem)
+		}
+	}
+	if !shouldReportFilesystem("/bootdata", "ext4") {
+		t.Fatal("/bootdata must remain reportable")
+	}
+	for _, mountpoint := range []string{"/boot", "/boot/efi", "/boot/firmware"} {
+		if shouldReportFilesystem(mountpoint, "ext4") {
+			t.Errorf("shouldReportFilesystem(%q, ext4) = true, want false", mountpoint)
 		}
 	}
 }

@@ -149,7 +149,7 @@ func (s *GopsutilSource) PersistentDisks(ctx context.Context) ([]protocol.DiskSt
 	}
 	disks := make([]protocol.DiskStats, 0, len(partitions))
 	for _, partition := range partitions {
-		if !isPersistentFilesystem(partition.Fstype) {
+		if !shouldReportFilesystem(partition.Mountpoint, partition.Fstype) {
 			continue
 		}
 		usage, err := s.deps.diskUsage(ctx, partition.Mountpoint)
@@ -249,11 +249,23 @@ func linuxPhysicalBlockDevice(name string) bool {
 var temporaryFilesystems = map[string]struct{}{
 	"tmpfs": {}, "devtmpfs": {}, "squashfs": {}, "overlay": {},
 	"proc": {}, "sysfs": {}, "cgroup": {}, "cgroup2": {},
+	"autofs": {}, "bpf": {}, "binfmt_misc": {}, "configfs": {},
+	"debugfs": {}, "devpts": {}, "fusectl": {}, "hugetlbfs": {},
+	"mqueue": {}, "nsfs": {}, "pstore": {}, "ramfs": {},
+	"securityfs": {}, "tracefs": {},
 }
 
 func isPersistentFilesystem(filesystem string) bool {
 	_, temporary := temporaryFilesystems[strings.ToLower(filesystem)]
 	return !temporary
+}
+
+func shouldReportFilesystem(mountpoint, filesystem string) bool {
+	return isPersistentFilesystem(filesystem) && !isBootMount(mountpoint)
+}
+
+func isBootMount(mountpoint string) bool {
+	return mountpoint == "/boot" || strings.HasPrefix(mountpoint, "/boot/")
 }
 
 func defaultRouteInterface(reader io.Reader) (string, error) {
