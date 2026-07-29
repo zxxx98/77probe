@@ -1,8 +1,6 @@
 services:
   tinyprobe:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
+    image: ghcr.io/zxxx98/77probe:latest
     ports:
       - "23333:8080"
     environment:

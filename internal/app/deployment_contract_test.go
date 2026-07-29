@@ -30,7 +30,7 @@ func TestDeploymentFilesDescribeSingleNonRootService(t *testing.T) {
 	compose := readDeploymentFile(t, filepath.Join(root, "docker-compose.yml"))
 	for _, required := range []string{
 		"tinyprobe:",
-		"dockerfile: deploy/Dockerfile",
+		"image: ghcr.io/zxxx98/77probe:latest",
 		"23333:8080",
 		"tinyprobe-data:/data",
 		"restart: unless-stopped",
