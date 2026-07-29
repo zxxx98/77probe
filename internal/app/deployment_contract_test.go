@@ -31,7 +31,7 @@ func TestDeploymentFilesDescribeSingleNonRootService(t *testing.T) {
 	for _, required := range []string{
 		"tinyprobe:",
 		"dockerfile: deploy/Dockerfile",
-		"8080:8080",
+		"23333:8080",
 		"tinyprobe-data:/data",
 		"restart: unless-stopped",
 		"/api/health",
@@ -67,6 +67,34 @@ func TestDockerfileBuildsServerForBuildKitTargetArchitecture(t *testing.T) {
 	} {
 		if strings.Contains(dockerfile, forbidden) {
 			t.Errorf("Dockerfile must not default BuildKit target argument %q", forbidden)
+		}
+	}
+}
+
+func TestGitHubActionsPublishesMultiArchitectureGHCRImage(t *testing.T) {
+	root := filepath.Join("..", "..")
+	workflow := readDeploymentFile(t, filepath.Join(root, ".github", "workflows", "publish-image.yml"))
+
+	for _, required := range []string{
+		"branches: [main]",
+		"contents: read",
+		"packages: write",
+		"docker/setup-qemu-action@v3",
+		"docker/setup-buildx-action@v3",
+		"docker/login-action@v3",
+		"registry: ghcr.io",
+		"images: ghcr.io/zxxx98/77probe",
+		"type=raw,value=latest",
+		"type=sha,prefix=sha-,format=short",
+		"docker/build-push-action@v6",
+		"file: deploy/Dockerfile",
+		"platforms: linux/amd64,linux/arm64",
+		"push: true",
+		"cache-from: type=gha",
+		"cache-to: type=gha,mode=max",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("publish workflow missing %q", required)
 		}
 	}
 }
