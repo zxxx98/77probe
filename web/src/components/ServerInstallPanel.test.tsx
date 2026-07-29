@@ -15,7 +15,7 @@ describe("ServerInstallPanel", () => {
     });
   });
 
-  it("builds one-time install content from the current origin", async () => {
+  it("builds one secure install command from the current origin", async () => {
     render(
       <ServerInstallPanel
         serverName="home-lab"
@@ -32,52 +32,44 @@ describe("ServerInstallPanel", () => {
     expect(
       await screen.findByText("一次性 Agent Token 已准备好，请立即保存。"),
     ).toHaveAttribute("aria-live", "polite");
-    expect(screen.getByTestId("download-command")).toHaveTextContent(
-      `curl --fail --location --output tinyprobe-agent-linux-amd64 ${origin}/downloads/tinyprobe-agent-linux-amd64`,
+    const installCommand = screen.getByTestId("install-command");
+    expect(installCommand.textContent).toContain("set -eu");
+    expect(installCommand.textContent).toContain('TMP_BIN="$(mktemp)"');
+    expect(installCommand.textContent).toContain(
+      "trap 'rm -f \"$TMP_BIN\"' EXIT",
     );
-    expect(screen.getByTestId("environment-file")).toHaveTextContent(
-      `TINYPROBE_SERVER_URL=${origin}/api/agent/v1/report`,
+    expect(installCommand.textContent).toContain(
+      `curl --fail --location --silent --show-error --output "$TMP_BIN" ${origin}/downloads/tinyprobe-agent-linux-amd64`,
     );
-    expect(screen.getByTestId("environment-file")).toHaveTextContent(
-      "TINYPROBE_AGENT_TOKEN=tp_one_time",
-    );
-    const installCommands = screen.getByTestId("install-commands");
-    expect(installCommands).toHaveTextContent(
-      "sudo install -m 0755 tinyprobe-agent-linux-amd64 /usr/local/bin/tinyprobe-agent",
-    );
-    expect(installCommands).toHaveTextContent(
-      "sudo install -m 0600 /dev/null /etc/tinyprobe-agent.env",
-    );
-    expect(installCommands).toHaveTextContent(
-      "sudo systemctl enable --now tinyprobe-agent",
-    );
-    expect(installCommands).not.toHaveTextContent("tp_one_time");
-    expect(installCommands).toHaveTextContent(
+    expect(installCommand.textContent).toContain(
       "read -rsp 'Agent Token: ' TINYPROBE_AGENT_TOKEN",
     );
-    expect(installCommands.textContent).toContain("printf '\\n'");
-    expect(installCommands.textContent).toContain("printf '%s\\n'");
-    expect(installCommands).toHaveTextContent(
+    expect(installCommand.textContent).toContain("printf '\\n'");
+    expect(installCommand.textContent).toContain("printf '%s\\n'");
+    expect(installCommand.textContent).toContain(
       '"TINYPROBE_AGENT_TOKEN=$TINYPROBE_AGENT_TOKEN" |',
     );
-    expect(installCommands).toHaveTextContent(
+    expect(installCommand.textContent).toContain(
+      "sudo install -m 0755 \"$TMP_BIN\" /usr/local/bin/tinyprobe-agent",
+    );
+    expect(installCommand.textContent).toContain(
+      "sudo install -m 0600 /dev/null /etc/tinyprobe-agent.env",
+    );
+    expect(installCommand.textContent).toContain(
       "sudo tee /etc/tinyprobe-agent.env >/dev/null",
     );
-    expect(installCommands).toHaveTextContent("unset TINYPROBE_AGENT_TOKEN");
-
-    const unit = screen.getByTestId("systemd-unit");
-    for (const directive of [
+    expect(installCommand.textContent).toContain("unset TINYPROBE_AGENT_TOKEN");
+    expect(installCommand.textContent).toContain(
       "EnvironmentFile=/etc/tinyprobe-agent.env",
-      "ExecStart=/usr/local/bin/tinyprobe-agent",
-      "Restart=always",
-      "RestartSec=5",
-      "NoNewPrivileges=true",
-      "ProtectSystem=strict",
-      "ReadOnlyPaths=/proc /sys",
-      "DynamicUser=true",
-    ]) {
-      expect(unit).toHaveTextContent(directive);
-    }
+    );
+    expect(installCommand.textContent).toContain(
+      "sudo systemctl enable --now tinyprobe-agent",
+    );
+    expect(installCommand.textContent).not.toContain("tp_one_time");
+    expect(screen.queryByTestId("download-command")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("environment-file")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("install-commands")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("systemd-unit")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("example.com");
   });
 
@@ -114,7 +106,7 @@ describe("ServerInstallPanel", () => {
     );
   });
 
-  it("switches all architecture-specific commands to arm64", () => {
+  it("switches the single install command to arm64", () => {
     render(
       <ServerInstallPanel
         serverName="home-lab"
@@ -129,13 +121,10 @@ describe("ServerInstallPanel", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByTestId("download-command")).toHaveTextContent(
+    expect(screen.getByTestId("install-command")).toHaveTextContent(
       "tinyprobe-agent-linux-arm64",
     );
-    expect(screen.getByTestId("install-commands")).toHaveTextContent(
-      "sudo install -m 0755 tinyprobe-agent-linux-arm64 /usr/local/bin/tinyprobe-agent",
-    );
-    expect(screen.getByTestId("download-command")).not.toHaveTextContent(
+    expect(screen.getByTestId("install-command")).not.toHaveTextContent(
       "tinyprobe-agent-linux-amd64",
     );
   });
@@ -189,10 +178,12 @@ describe("ServerInstallPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "复制下载命令" }));
+    const installCommand = screen.getByTestId("install-command");
+    fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("status")).toHaveTextContent("下载命令已复制");
+    expect(writeText).toHaveBeenCalledWith(installCommand.textContent);
+    expect(screen.getByRole("status")).toHaveTextContent("安装命令已复制");
   });
 
   it("announces copy failure accessibly", async () => {
@@ -205,7 +196,7 @@ describe("ServerInstallPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "复制环境配置" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "复制失败，请手动选择内容",

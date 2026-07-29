@@ -8,33 +8,6 @@ interface ServerInstallPanelProps {
   onTokenCleared: () => void;
 }
 
-interface CopyBlockProps {
-  label: string;
-  value: string;
-  testId: string;
-  onCopy: (label: string, value: string) => void;
-}
-
-function CopyBlock({ label, value, testId, onCopy }: CopyBlockProps) {
-  return (
-    <div className="install-copy-block">
-      <div className="install-copy-heading">
-        <h3>{label}</h3>
-        <button
-          className="button button-quiet"
-          type="button"
-          onClick={() => onCopy(label, value)}
-        >
-          复制{label}
-        </button>
-      </div>
-      <pre data-testid={testId} tabIndex={0}>
-        <code>{value}</code>
-      </pre>
-    </div>
-  );
-}
-
 export function ServerInstallPanel({
   serverName,
   token,
@@ -49,11 +22,13 @@ export function ServerInstallPanel({
   const [tokenAnnouncement, setTokenAnnouncement] = useState("");
   const origin = window.location.origin;
   const filename = `tinyprobe-agent-linux-${architecture}`;
-  const downloadCommand = `curl --fail --location --output ${filename} ${origin}/downloads/${filename}`;
-  const environmentFile = `TINYPROBE_SERVER_URL=${origin}/api/agent/v1/report\nTINYPROBE_AGENT_TOKEN=${token}`;
-  const installCommands = `sudo install -m 0755 ${filename} /usr/local/bin/tinyprobe-agent
+  const installCommand = `set -eu
+TMP_BIN="$(mktemp)"
+trap 'rm -f "$TMP_BIN"' EXIT
+curl --fail --location --silent --show-error --output "$TMP_BIN" ${origin}/downloads/${filename}
 read -rsp 'Agent Token: ' TINYPROBE_AGENT_TOKEN
 printf '\\n'
+sudo install -m 0755 "$TMP_BIN" /usr/local/bin/tinyprobe-agent
 sudo install -m 0600 /dev/null /etc/tinyprobe-agent.env
 printf '%s\\n' \\
   'TINYPROBE_SERVER_URL=${origin}/api/agent/v1/report' \\
@@ -81,23 +56,6 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now tinyprobe-agent`;
-  const systemdUnit = `[Unit]
-Description=TinyProbe Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-DynamicUser=true
-EnvironmentFile=/etc/tinyprobe-agent.env
-ExecStart=/usr/local/bin/tinyprobe-agent
-Restart=always
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadOnlyPaths=/proc /sys
-
-[Install]
-WantedBy=multi-user.target`;
 
   useEffect(() => {
     headingRef.current?.focus();
@@ -155,7 +113,7 @@ WantedBy=multi-user.target`;
           <h2 id="install-panel-title" ref={headingRef} tabIndex={-1}>
             安装 {serverName} 的 Agent
           </h2>
-          <p>先保存 Token，再选择服务器架构并依次执行下面的命令。</p>
+          <p>选择服务器架构后，复制并执行下面的一条安装命令；执行时会提示输入 Agent Token。</p>
         </div>
         <button
           className="button button-primary install-token-saved"
@@ -203,30 +161,21 @@ WantedBy=multi-user.target`;
         role="tabpanel"
         aria-labelledby={`architecture-${architecture}`}
       >
-        <CopyBlock
-          label="下载命令"
-          value={downloadCommand}
-          testId="download-command"
-          onCopy={copy}
-        />
-        <CopyBlock
-          label="环境配置"
-          value={environmentFile}
-          testId="environment-file"
-          onCopy={copy}
-        />
-        <CopyBlock
-          label="安装命令"
-          value={installCommands}
-          testId="install-commands"
-          onCopy={copy}
-        />
-        <CopyBlock
-          label="systemd 配置"
-          value={systemdUnit}
-          testId="systemd-unit"
-          onCopy={copy}
-        />
+        <div className="install-copy-block">
+          <div className="install-copy-heading">
+            <h3>安装命令</h3>
+            <button
+              className="button button-quiet"
+              type="button"
+              onClick={() => copy("安装命令", installCommand)}
+            >
+              复制安装命令
+            </button>
+          </div>
+          <pre data-testid="install-command" tabIndex={0}>
+            <code>{installCommand}</code>
+          </pre>
+        </div>
       </div>
 
       {copyFeedback ? (
